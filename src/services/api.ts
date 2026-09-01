@@ -8,22 +8,29 @@ export const API = {
     return res.json();
   },
 
-  async checkVehicleFines(plate: string): Promise<VehicleFineResult> {
+  async checkVehicleFines(plate: string, force = false): Promise<VehicleFineResult> {
     const res = await fetch("/api/fines/check", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ plate }),
+      body: JSON.stringify({ plate, force }),
     });
     const json = await res.json();
     if (!res.ok) throw new Error(json.error || "Торгууль шалгахад алдаа гарлаа");
     return json;
   },
 
-  async checkBulkFines(plates: string[]): Promise<BulkFinesResult> {
+  async getFinesSummary(force = false): Promise<BulkFinesResult> {
+    const res = await fetch(`/api/fines/summary${force ? "?force=true" : ""}`);
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error || "Торгуулийн нэгтгэл авахад алдаа гарлаа");
+    return json;
+  },
+
+  async checkBulkFines(plates?: string[], force = false): Promise<BulkFinesResult> {
     const res = await fetch("/api/fines/check-bulk", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ plates }),
+      body: JSON.stringify({ plates, force }),
     });
     const json = await res.json();
     if (!res.ok) throw new Error(json.error || "Торгууль шалгахад алдаа гарлаа");
@@ -121,9 +128,51 @@ export const API = {
     return res.json();
   },
 
+  async getAllVehicleSheets(month?: string): Promise<{ sheets: VehicleSheetData[]; count: number; yearMonth: string }> {
+    const query = month ? `?month=${month}` : "";
+    const res = await fetch(`/api/all-vehicle-sheets${query}`);
+    if (!res.ok) throw new Error("Бүх машины замын хуудас авахад алдаа гарлаа");
+    return res.json();
+  },
+
   async syncGPSBoxNow(): Promise<{ status: string; count: number; syncStatus: string; lastSync: string }> {
     const res = await fetch("/api/gpsbox/sync-now", { method: "POST" });
     if (!res.ok) throw new Error("GPSBox синхрончлол амжилтгүй боллоо");
+    return res.json();
+  },
+
+  async getGPSBoxAudit(): Promise<{
+    status: string;
+    totalDrivers: number;
+    matchedCount: number;
+    totalGpsboxObjects: number;
+    apiEndpoint: string;
+    audit: Array<{
+      driverId: string;
+      driverName: string;
+      vehicle: string;
+      model: string;
+      matched: boolean;
+      gpsboxName: string;
+      imei: string;
+      dtTracker: string;
+      speed: number;
+      odometer: number;
+      fuel: string;
+      fuelPercent: number;
+      fuelSource: string;
+      temp: string;
+      tempNum: number;
+      tempSource: string;
+      voltage?: string;
+      battery?: string;
+      gsmSignal?: string;
+      status: string;
+      rawParams: any;
+    }>;
+  }> {
+    const res = await fetch("/api/gpsbox/audit");
+    if (!res.ok) throw new Error("GPSBox бүрэн шалгалтын мэдээлэл татахад алдаа гарлаа");
     return res.json();
   },
 
@@ -148,3 +197,5 @@ export const API = {
     return json;
   }
 };
+
+export const api = API;

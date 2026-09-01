@@ -3,6 +3,7 @@ import { Driver, TripLog, Telemetry } from "../types";
 import { API } from "../services/api";
 import { PETROVIS_GAS_STATIONS } from "../constants/gasStations";
 import { getSeasonSchedule, checkScheduleReminders, SeasonScheduleInfo, ReminderStatus } from "../utils/scheduleHelper";
+import { DriverFinesCard } from "./DriverFinesCard";
 import { 
   Truck, 
   Fuel, 
@@ -26,7 +27,8 @@ import {
   CreditCard,
   Receipt,
   Info,
-  BellRing
+  BellRing,
+  ShieldCheck
 } from "lucide-react";
 
 interface DriverWaybillProps {
@@ -465,6 +467,15 @@ export const DriverWaybill: React.FC<DriverWaybillProps> = ({
           </div>
         ) : null}
       </section>
+
+      {/* 5. Card: Traffic Violations & Fines Check (erthub.mn) */}
+      <div className="mb-3.5">
+        <DriverFinesCard
+          vehicleNumber={currentDriver.vehicle || "2611УЕВ"}
+          driverName={currentDriver.name}
+          driverCode={currentDriver.id}
+        />
+      </div>
 
       {/* PHASE 1: START ODOMETER CARD */}
       {tripStatus.phase === "none" && (

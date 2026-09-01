@@ -19,14 +19,45 @@ import {
 } from "lucide-react";
 
 const AUTH_STORAGE_KEY = "fleet_auth_driver_code_v2";
+const MANAGER_AUTH_KEY = "fleet_manager_authenticated_session_v1";
 
 export default function App() {
-  // Check if initial URL path is /manager
+  // Check if initial URL path is /manager or /admin
   const isManagerPath = () => {
     if (typeof window === "undefined") return false;
     const path = window.location.pathname.toLowerCase();
     const hash = window.location.hash.toLowerCase();
-    return path.startsWith("/manager") || hash.includes("manager");
+    const search = window.location.search.toLowerCase();
+    return (
+      path.startsWith("/manager") || 
+      path.startsWith("/admin") || 
+      hash.includes("manager") || 
+      hash.includes("admin") ||
+      search.includes("role=manager") ||
+      search.includes("role=admin")
+    );
+  };
+
+  // Check if manager session is authenticated
+  const isManagerAuthenticated = () => {
+    if (typeof window === "undefined") return false;
+    return localStorage.getItem(MANAGER_AUTH_KEY) === "true";
+  };
+
+  // Get driver code from URL params (e.g. ?code=M16, ?to=M16, ?driver=M16)
+  const getDriverCodeFromUrl = () => {
+    if (typeof window === "undefined") return null;
+    const urlParams = new URLSearchParams(window.location.search);
+    const codeParam = urlParams.get("code") || urlParams.get("to") || urlParams.get("driver") || urlParams.get("id");
+    if (codeParam) return codeParam.trim().toUpperCase();
+
+    // Check path like /driver/M16
+    const path = window.location.pathname;
+    const match = path.match(/^\/driver\/([a-zA-Z0-9_-]+)/i);
+    if (match && match[1]) {
+      return match[1].trim().toUpperCase();
+    }
+    return null;
   };
 
   const [currentRole, setCurrentRole] = useState<"driver" | "admin">(
@@ -37,6 +68,8 @@ export default function App() {
   const [trips, setTrips] = useState<TripLog[]>([]);
   const [currentDriver, setCurrentDriver] = useState<Driver | null>(null);
   const [isDriverAuthenticated, setIsDriverAuthenticated] = useState<boolean>(false);
+  const [isManagerLoggedIn, setIsManagerLoggedIn] = useState<boolean>(isManagerAuthenticated());
+  const [loginModalMode, setLoginModalMode] = useState<"driver" | "manager">("driver");
   
   // Modals
   const [showLoginModal, setShowLoginModal] = useState<boolean>(false);
@@ -100,8 +133,10 @@ export default function App() {
       const tripData = await API.getTrips().catch(() => ({ trips: [] }));
       setTrips(tripData.trips || []);
 
-      // Check saved authentication in local storage
-      const savedCode = localStorage.getItem(AUTH_STORAGE_KEY);
+      // Check URL parameters first (e.g. tugeelt.site/?code=M16 or tugeelt.site/driver/M16)
+      const urlCode = getDriverCodeFromUrl();
+      const savedCode = urlCode || localStorage.getItem(AUTH_STORAGE_KEY);
+
       if (savedCode && data.drivers.length > 0) {
         const cleanSaved = savedCode.trim().toUpperCase();
         const found = data.drivers.find(
@@ -110,13 +145,21 @@ export default function App() {
         if (found) {
           setCurrentDriver(found);
           setIsDriverAuthenticated(true);
+          localStorage.setItem(AUTH_STORAGE_KEY, found.code || found.id);
           setShowLoginModal(false);
+          if (urlCode) {
+            showToast(`Жолооч ${found.name} (${found.code || found.id}) шууд холбогдлоо`, "success");
+          }
           return;
         }
       }
 
-      // If no valid authenticated session and user is in driver mode, prompt for code
-      if (!savedCode && !isManagerPath()) {
+      // If in manager path but not yet authenticated with password 88051530, prompt manager login
+      if (isManagerPath() && !isManagerAuthenticated()) {
+        setLoginModalMode("manager");
+        setShowLoginModal(true);
+      } else if (!savedCode && !isManagerPath()) {
+        setLoginModalMode("driver");
         setShowLoginModal(true);
         setIsDriverAuthenticated(false);
       }
@@ -198,20 +241,39 @@ export default function App() {
                 </button>
               ) : (
                 <button
-                  onClick={() => setShowLoginModal(true)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-xs font-black text-slate-950 transition-all shadow-xs"
+                  onClick={() => {
+                    setLoginModalMode("driver");
+                    setShowLoginModal(true);
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-xs font-black text-slate-950 transition-all shadow-xs cursor-pointer"
                 >
                   <KeyRound className="w-3.5 h-3.5" />
                   <span>Код оруулах</span>
                 </button>
               )}
+
+              <button
+                onClick={() => {
+                  if (isManagerAuthenticated()) {
+                    setRoleAndUrl("admin");
+                  } else {
+                    setLoginModalMode("manager");
+                    setShowLoginModal(true);
+                  }
+                }}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-semibold text-slate-200 transition-all cursor-pointer"
+                title="Менежер / Админ хэсэг рүү шилжих"
+              >
+                <ShieldCheck className="w-3.5 h-3.5 text-sky-300" />
+                <span className="hidden sm:inline">Менежер</span>
+              </button>
             </div>
           ) : (
-            /* Admin / Manager Mode (tugeelt.ai.studio/manager) */
+            /* Admin / Manager Mode (tugeelt.site/manager) */
             <div className="flex items-center gap-2">
               <span className="hidden md:inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold bg-sky-500/20 text-sky-300 border border-sky-400/30">
                 <ShieldCheck className="w-3.5 h-3.5" />
-                <span>Менежер / Админ самбар</span>
+                <span>Менежер самбар</span>
               </span>
 
               <button
@@ -225,11 +287,24 @@ export default function App() {
 
               <button
                 onClick={() => setRoleAndUrl("driver")}
-                className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-semibold text-slate-300 transition-all"
+                className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-semibold text-slate-300 transition-all cursor-pointer"
                 title="Жолоочийн замын хуудас руу шилжих"
               >
                 <Smartphone className="w-3.5 h-3.5" />
                 <span className="hidden sm:inline">Жолоочийн хуудас</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  localStorage.removeItem(MANAGER_AUTH_KEY);
+                  setIsManagerLoggedIn(false);
+                  setRoleAndUrl("driver");
+                  showToast("Менежерийн системээс гарлаа", "info");
+                }}
+                className="p-1.5 rounded-xl bg-white/10 hover:bg-rose-500/30 text-slate-300 hover:text-rose-200 transition-all cursor-pointer"
+                title="Менежерийн эрхээс гарах"
+              >
+                <LogOut className="w-4 h-4" />
               </button>
             </div>
           )}
@@ -287,17 +362,20 @@ export default function App() {
       {showLoginModal && (
         <LoginModal
           drivers={drivers}
+          initialMode={loginModalMode}
           onSelectDriver={handleSelectDriver}
           onAdminLogin={() => {
+            setIsManagerLoggedIn(true);
             setShowLoginModal(false);
             setRoleAndUrl("admin");
+            showToast("Менежерийн удирдлагын самбарт амжилттай нэвтэрлээ", "success");
           }}
           onClose={() => {
-            if (isDriverAuthenticated) {
+            if (isDriverAuthenticated || (currentRole === "admin" && isManagerAuthenticated())) {
               setShowLoginModal(false);
             }
           }}
-          isMandatory={!isDriverAuthenticated && currentRole === "driver"}
+          isMandatory={(!isDriverAuthenticated && currentRole === "driver") || (!isManagerAuthenticated() && currentRole === "admin")}
         />
       )}
 
@@ -313,10 +391,11 @@ export default function App() {
       {/* Driver CRUD Management Modal */}
       {showDriverManagementModal && (
         <DriverManagementModal
-          driver={selectedDriverForMgmt}
-          isNew={createDriverForMgmt}
+          drivers={drivers}
+          initialDriver={selectedDriverForMgmt}
+          initialCreateNew={createDriverForMgmt}
           onClose={() => setShowDriverManagementModal(false)}
-          onSuccess={loadDriversAndInit}
+          onRefresh={loadDriversAndInit}
           onShowToast={showToast}
         />
       )}

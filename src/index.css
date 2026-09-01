@@ -13,12 +13,41 @@
 }
 
 @media print {
-  body {
-    background: #ffffff !important;
-    color: #000000 !important;
+  @page {
+    size: A4 landscape;
+    margin: 6mm 8mm;
   }
   
-  nav, button, select, input[type="month"] {
+  html, body {
+    width: 100% !important;
+    height: auto !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+  
+  nav, header, button, select, input, .no-print {
     display: none !important;
+  }
+
+  .waybill-sheet-page {
+    page-break-after: always !important;
+    break-after: page !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    box-sizing: border-box !important;
+    display: block !important;
+    margin-bottom: 0 !important;
+    padding: 0 !important;
+  }
+
+  .waybill-sheet-page:last-child {
+    page-break-after: auto !important;
+    break-after: auto !important;
   }
 }

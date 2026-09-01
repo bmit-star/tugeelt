@@ -22,13 +22,20 @@ export interface Telemetry {
   odo: number;
   fuel: string;
   fuelPercent?: number;
+  fuelSource?: string;
   temp: string;
   tempNum?: number;
+  tempSource?: string;
   speed: number;
   lat?: number;
   lng?: number;
   status: "active" | "idle" | "moving" | "offline";
   lastUpdate: string;
+  dtTracker?: string;
+  imei?: string;
+  voltage?: string;
+  gsmSignal?: string;
+  batteryLevel?: string;
 }
 
 export interface TripLog {

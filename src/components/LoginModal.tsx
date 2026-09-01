@@ -1,7 +1,9 @@
 import React, { useState } from "react";
 import { Driver } from "../types";
-import { getSeasonSchedule } from "../utils/scheduleHelper";
-import { Truck, ShieldCheck, ArrowRight, Clock, AlertTriangle, KeyRound, CheckCircle2 } from "lucide-react";
+import { Truck, ShieldCheck, ArrowRight, KeyRound, Lock, AlertTriangle } from "lucide-react";
+
+const MANAGER_PASSWORD = "88051530";
+const MANAGER_AUTH_KEY = "fleet_manager_authenticated_session_v1";
 
 interface LoginModalProps {
   drivers: Driver[];
@@ -9,6 +11,7 @@ interface LoginModalProps {
   onAdminLogin: () => void;
   onClose?: () => void;
   isMandatory?: boolean;
+  initialMode?: "driver" | "manager";
 }
 
 export const LoginModal: React.FC<LoginModalProps> = ({
@@ -16,14 +19,14 @@ export const LoginModal: React.FC<LoginModalProps> = ({
   onSelectDriver,
   onAdminLogin,
   onClose,
-  isMandatory = false
+  isMandatory = false,
+  initialMode = "driver"
 }) => {
+  const [activeTab, setActiveTab] = useState<"driver" | "manager">(initialMode);
   const [driverCode, setDriverCode] = useState("");
-  const [errorMsg, setErrorMsg] = useState("");
-  const [isAdminMode, setIsAdminMode] = useState(false);
-  const [adminKey, setAdminKey] = useState("");
-
-  const schedule = getSeasonSchedule();
+  const [managerPassword, setManagerPassword] = useState("");
+  const [driverError, setDriverError] = useState("");
+  const [managerError, setManagerError] = useState("");
 
   const normalizeId = (str: string) => {
     if (!str) return "";
@@ -38,7 +41,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
     e.preventDefault();
     const cleanCode = normalizeId(driverCode);
     if (!cleanCode) {
-      setErrorMsg("Бүсийн / Чиглэлийн кодоо оруулна уу!");
+      setDriverError("Бүсийн / Чиглэлийн кодоо оруулна уу!");
       return;
     }
 
@@ -47,16 +50,27 @@ export const LoginModal: React.FC<LoginModalProps> = ({
     );
 
     if (found) {
-      setErrorMsg("");
+      setDriverError("");
       onSelectDriver(found);
     } else {
-      setErrorMsg(`'${driverCode}' гэсэн кодтой жолооч олдсонгүй! (Жишээ нь: M16, KA1, M24 кодоо зөв оруулна уу)`);
+      setDriverError(`'${driverCode}' гэсэн кодтой жолооч олдсонгүй! (Жишээ нь: M16, KA1, M24 кодоо зөв оруулна уу)`);
     }
   };
 
-  const handleAdminSubmit = (e: React.FormEvent) => {
+  const handleManagerSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    onAdminLogin();
+    if (!managerPassword) {
+      setManagerError("Менежерийн нэвтрэх нууц кодыг оруулна уу!");
+      return;
+    }
+
+    if (managerPassword.trim() === MANAGER_PASSWORD) {
+      setManagerError("");
+      localStorage.setItem(MANAGER_AUTH_KEY, "true");
+      onAdminLogin();
+    } else {
+      setManagerError("Менежерийн нэвтрэх код буруу байна!");
+    }
   };
 
   return (
@@ -65,21 +79,58 @@ export const LoginModal: React.FC<LoginModalProps> = ({
         
         {/* Top Header Logo */}
         <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-[#0878bd] to-sky-400 text-white flex items-center justify-center mx-auto mb-3.5 shadow-lg shadow-sky-900/20">
-          {isAdminMode ? <ShieldCheck className="w-7 h-7" /> : <Truck className="w-7 h-7" />}
+          {activeTab === "manager" ? <ShieldCheck className="w-7 h-7" /> : <Truck className="w-7 h-7" />}
         </div>
 
         <h2 className="text-xl font-black text-[#123047] tracking-tight">
-          {isAdminMode ? "Админ удирдлагын хэсэг" : "Бүсийн код баталгаажуулах"}
+          FLEET DIGITAL • Системд нэвтрэх
         </h2>
         <p className="text-xs text-slate-500 mt-1 mb-4 leading-relaxed">
-          {isAdminMode 
-            ? "Парк удирдлага, GPSBox тохиргоо болон тайлан хүснэгт" 
-            : "Өөрийн хариуцсан бүсийн кодоо оруулж замын хуудас, ажил үйлчилгээгээ авна уу"}
+          {activeTab === "manager"
+            ? "Парк удирдлага, хяналтын самбар болон нэгдсэн бүртгэл"
+            : "Өөрийн бүсийн кодоо (M16, KA1...) оруулан замын хуудас руу нэвтэрнэ"}
         </p>
 
-        {/* Forms */}
-        {!isAdminMode ? (
-          <form onSubmit={handleDriverSubmit} className="space-y-3.5 mt-2">
+        {/* 2 Tabs: Driver vs Manager */}
+        <div className="flex rounded-2xl bg-slate-100 p-1 mb-5 border border-slate-200">
+          <button
+            type="button"
+            onClick={() => {
+              setActiveTab("driver");
+              setDriverError("");
+              setManagerError("");
+            }}
+            className={`flex-1 py-2.5 rounded-xl text-xs sm:text-sm font-black transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+              activeTab === "driver"
+                ? "bg-white text-[#0878bd] shadow-sm"
+                : "text-slate-500 hover:text-slate-800"
+            }`}
+          >
+            <Truck className="w-4 h-4" />
+            <span>Жолооч</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setActiveTab("manager");
+              setDriverError("");
+              setManagerError("");
+            }}
+            className={`flex-1 py-2.5 rounded-xl text-xs sm:text-sm font-black transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+              activeTab === "manager"
+                ? "bg-[#123047] text-white shadow-sm"
+                : "text-slate-500 hover:text-slate-800"
+            }`}
+          >
+            <ShieldCheck className="w-4 h-4" />
+            <span>Менежер / Админ</span>
+          </button>
+        </div>
+
+        {/* TAB 1: DRIVER FORM */}
+        {activeTab === "driver" ? (
+          <form onSubmit={handleDriverSubmit} className="space-y-3.5">
             <div>
               <div className="relative">
                 <input
@@ -89,16 +140,16 @@ export const LoginModal: React.FC<LoginModalProps> = ({
                   value={driverCode}
                   onChange={(e) => {
                     setDriverCode(e.target.value);
-                    setErrorMsg("");
+                    setDriverError("");
                   }}
                   autoFocus
                   className="w-full h-13 px-4 text-center rounded-2xl border-2 border-slate-300 bg-slate-50 text-slate-900 text-xl font-black uppercase tracking-wider focus:bg-white focus:outline-none focus:ring-4 focus:ring-[#0878bd]/20 focus:border-[#0878bd] transition-all"
                 />
               </div>
 
-              {errorMsg && (
+              {driverError && (
                 <p className="text-xs font-semibold text-rose-600 mt-2 bg-rose-50 p-2.5 rounded-xl border border-rose-200 text-left">
-                  ⚠️ {errorMsg}
+                  ⚠️ {driverError}
                 </p>
               )}
             </div>
@@ -106,18 +157,35 @@ export const LoginModal: React.FC<LoginModalProps> = ({
             <button
               id="login-submit-btn"
               type="submit"
-              className="w-full h-12 rounded-2xl bg-[#0878bd] hover:bg-[#076ba8] active:scale-[0.99] text-white text-sm sm:text-base font-black shadow-lg shadow-sky-900/20 flex items-center justify-center gap-2 transition-all"
+              className="w-full h-12 rounded-2xl bg-[#0878bd] hover:bg-[#076ba8] active:scale-[0.99] text-white text-sm sm:text-base font-black shadow-lg shadow-sky-900/20 flex items-center justify-center gap-2 transition-all cursor-pointer"
             >
-              <span>Баталгаажуулж нэвтрэх</span>
+              <span>Жолоочоор нэвтрэх</span>
               <ArrowRight className="w-4 h-4" />
             </button>
 
+            <div className="pt-1 flex items-center justify-center gap-2 text-[11px] text-slate-500 font-medium">
+              <span className="flex items-center gap-1">
+                <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+                Замын хуудас
+              </span>
+              <span>•</span>
+              <span className="flex items-center gap-1">
+                <Truck className="w-3.5 h-3.5 text-[#0878bd]" />
+                GPS Телематик
+              </span>
+              <span>•</span>
+              <span className="flex items-center gap-1">
+                <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />
+                Торгуулийн мэдээлэл
+              </span>
+            </div>
+
             {!isMandatory && onClose && (
-              <div className="pt-2 text-center">
+              <div className="pt-2">
                 <button
                   type="button"
                   onClick={onClose}
-                  className="text-xs text-slate-500 hover:text-slate-800"
+                  className="text-xs text-slate-400 hover:text-slate-700"
                 >
                   Хаах
                 </button>
@@ -125,31 +193,58 @@ export const LoginModal: React.FC<LoginModalProps> = ({
             )}
           </form>
         ) : (
-          <form onSubmit={handleAdminSubmit} className="space-y-3.5">
-            <div className="p-3.5 bg-sky-50 rounded-2xl border border-sky-100 text-left text-xs text-sky-900">
-              <p className="font-bold mb-1">Менежер / Админ хэсэгт хандах</p>
-              <p className="text-slate-600 leading-relaxed">
-                Шууд хандах хаяг: <span className="font-mono font-bold text-[#0878bd]">tugeelt.ai.studio/manager</span>
-              </p>
+          /* TAB 2: MANAGER FORM */
+          <form onSubmit={handleManagerSubmit} className="space-y-3.5">
+            <div>
+              <div className="relative">
+                <Lock className="w-5 h-5 text-slate-400 absolute left-4 top-1/2 -translate-y-1/2" />
+                <input
+                  id="login-manager-code-input"
+                  type="password"
+                  placeholder="Менежерийн нэвтрэх код..."
+                  value={managerPassword}
+                  onChange={(e) => {
+                    setManagerPassword(e.target.value);
+                    setManagerError("");
+                  }}
+                  autoFocus
+                  className="w-full h-13 pl-12 pr-4 text-center rounded-2xl border-2 border-slate-300 bg-slate-50 text-slate-900 text-lg font-black tracking-widest focus:bg-white focus:outline-none focus:ring-4 focus:ring-[#123047]/20 focus:border-[#123047] transition-all"
+                />
+              </div>
+
+              {managerError && (
+                <p className="text-xs font-semibold text-rose-600 mt-2 bg-rose-50 p-2.5 rounded-xl border border-rose-200 text-left">
+                  ⚠️ {managerError}
+                </p>
+              )}
             </div>
 
             <button
+              id="login-manager-submit-btn"
               type="submit"
-              className="w-full h-12 rounded-2xl bg-[#123047] hover:bg-[#0b2436] text-white text-sm font-black shadow-lg flex items-center justify-center gap-2 transition-all"
+              className="w-full h-12 rounded-2xl bg-[#123047] hover:bg-[#0b2436] active:scale-[0.99] text-white text-sm sm:text-base font-black shadow-lg shadow-slate-950/20 flex items-center justify-center gap-2 transition-all cursor-pointer"
             >
               <ShieldCheck className="w-5 h-5 text-sky-400" />
-              <span>Админ самбар луу шилжих</span>
+              <span>Менежерээр нэвтрэх</span>
+              <ArrowRight className="w-4 h-4" />
             </button>
 
-            <div className="pt-2">
-              <button
-                type="button"
-                onClick={() => setIsAdminMode(false)}
-                className="text-xs font-bold text-slate-500 hover:text-[#0878bd]"
-              >
-                ← Буцах (Жолооч бүсийн кодоор нэвтрэх)
-              </button>
+            <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200 text-left text-xs text-slate-600">
+              <span className="font-bold text-slate-800">Шууд хандах хаяг: </span>
+              <span className="font-mono font-bold text-[#0878bd]">tugeelt.site/manager</span>
             </div>
+
+            {!isMandatory && onClose && (
+              <div className="pt-1">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="text-xs text-slate-400 hover:text-slate-700"
+                >
+                  Хаах
+                </button>
+              </div>
+            )}
           </form>
         )}
       </div>

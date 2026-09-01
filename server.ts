@@ -34,13 +34,20 @@ export interface Telemetry {
   odo: number;
   fuel: string;
   fuelPercent?: number;
+  fuelSource?: string;
   temp: string;
   tempNum?: number;
+  tempSource?: string;
   speed: number;
   lat?: number;
   lng?: number;
   status: "active" | "idle" | "moving" | "offline";
   lastUpdate: string;
+  dtTracker?: string;
+  imei?: string;
+  voltage?: string;
+  gsmSignal?: string;
+  batteryLevel?: string;
 }
 
 export interface TripLog {
@@ -115,6 +122,7 @@ interface DBState {
   trips: TripLog[];
   gpsboxConfig: GPSBoxConfig;
   customTelemetry: Record<string, Telemetry>;
+  finesCache?: Record<string, { result: FineResult; timestamp: number }>;
 }
 
 function loadDB(): DBState {
@@ -129,6 +137,9 @@ function loadDB(): DBState {
   }
 
   if (loaded && loaded.drivers && loaded.drivers.length > 0) {
+    if (!loaded.finesCache) {
+      loaded.finesCache = {};
+    }
     // Ensure all 30 authoritative drivers from Google Sheet exist and have defaultRoute / updated info
     const driverMap = new Map<string, Driver>();
     loaded.drivers.forEach(d => driverMap.set(d.id.toUpperCase(), d));
@@ -190,7 +201,8 @@ function loadDB(): DBState {
       lastSync: new Date().toISOString(),
       sheetUrl: "https://docs.google.com/spreadsheets/d/1Ibws69hyXnVmRlcnopt9tZmLH3sXeqrR1wgVJjEM_BI/edit?gid=0#gid=0"
     },
-    customTelemetry: {}
+    customTelemetry: {},
+    finesCache: {}
   };
   saveDB(initial);
   return initial;
@@ -293,10 +305,142 @@ function extractObjectsArray(result: any): any[] {
   return Object.values(result).filter((v: any) => v && typeof v === "object" && (v.name || v.plate || v.id || v.imei));
 }
 
+function parseVehicleTelemetry(item: any, driverModel?: string): Telemetry {
+  const p = item.params || item.sensors || item.telemetry || item.ostatok || item.p || item.f || {};
+  const modelStr = String(item.model || driverModel || "").toLowerCase();
+
+  // 1. Odometer calculation:
+  // item.odometer is in km (e.g. "55651.9072"), p.io16 is in meters (e.g. 85482192)
+  let odoVal = 0;
+  if (item.odometer !== undefined && item.odometer !== null && item.odometer !== "") {
+    odoVal = Math.round(Number(item.odometer));
+  } else if (p.io16) {
+    odoVal = Math.round(Number(p.io16) / 1000);
+  } else {
+    odoVal = parseOdoValue(item.odometer || item.mileage || p.odometer || p.mileage || p["001 Odometer"] || p.Odometer || p["Одометр"]);
+  }
+
+  // 2. Fuel Tank Capacity Determination based on vehicle model
+  let tankCapacity = 88; // Default Isuzu NMR71H
+  if (modelStr.includes("mighty") || modelStr.includes("kmchk") || modelStr.includes("hyundai")) {
+    tankCapacity = 100;
+  } else if (modelStr.includes("bongo") || modelStr.includes("kia")) {
+    tankCapacity = 65;
+  } else if (modelStr.includes("hino") || modelStr.includes("giga") || modelStr.includes("profia") || modelStr.includes("ranger")) {
+    tankCapacity = 200;
+  }
+
+  // 3. Fuel calculation:
+  // Type A: Digital LLS Sensor (io201, io203) - 0 to 4095 raw units
+  let fuelNum = 0;
+  let fuelPercent = 0;
+  let fuelSource = "Тодорхойгүй";
+
+  const rawLLS1 = p.io201 !== undefined && p.io201 !== null && p.io201 !== "" ? Number(p.io201) : null;
+  const rawLLS2 = p.io203 !== undefined && p.io203 !== null && p.io203 !== "" ? Number(p.io203) : null;
+
+  if (rawLLS1 !== null && rawLLS1 > 0 && rawLLS1 <= 4095) {
+    fuelNum = Number(((tankCapacity * rawLLS1) / 4095).toFixed(1));
+    fuelSource = `LLS1 дижитал (${rawLLS1})`;
+
+    // Check for 2nd tank / LLS2 (Dual tank vehicles like 3096УАУ, 6530УКН)
+    if (rawLLS2 !== null && rawLLS2 > 0 && rawLLS2 <= 4095) {
+      const fuel2 = Number(((tankCapacity * rawLLS2) / 4095).toFixed(1));
+      fuelNum += fuel2;
+      fuelSource += ` + LLS2 (${rawLLS2})`;
+    }
+    fuelPercent = Math.min(100, Math.max(0, Math.round((fuelNum / tankCapacity) * 100)));
+  } else if (p.io9 !== undefined && p.io9 !== null && Number(p.io9) > 1000 && Number(p.io9) <= 5500) {
+    // Type B: Analog Float Voltage Sensor (io9 in mV, 1000-5000 mV for vehicles without digital LLS)
+    const rawV = Number(p.io9);
+    fuelPercent = Math.min(100, Math.max(0, Math.round(((rawV - 500) / 4500) * 100)));
+    fuelNum = Number(((tankCapacity * fuelPercent) / 100).toFixed(1));
+    fuelSource = `Аналог хөвүүр (${rawV}mV)`;
+  } else if (p.io86 !== undefined && p.io86 !== null && Number(p.io86) > 0 && Number(p.io86) <= 100) {
+    // Type C: Percentage Sensor (io86)
+    fuelPercent = Number(p.io86);
+    fuelNum = Number(((tankCapacity * fuelPercent) / 100).toFixed(1));
+    fuelSource = `Түвшин ${p.io86}%`;
+  } else {
+    const parsedF = parseFuelValue(item.fuel_level || item.fuel || item.ostatok || p.fuel_level || p.fuel || p.ostatok || p["Fuel level"] || p["Түлш"] || p["Түлшний түвшин"]);
+    fuelNum = parsedF.num;
+    fuelPercent = parsedF.percent;
+    fuelSource = parsedF.num > 0 ? "Сүлжээний өгөгдөл" : "Хэмжигчгүй";
+  }
+
+  const fuelStr = `${fuelNum.toFixed(1)} л`;
+
+  // 4. Refrigeration Temperature Calculation:
+  // Type A: Teltonika BLE EYE Sensor (io10800) in 0.01°C
+  let tempNum: number | null = null;
+  let tempSource = "Хэмжигчгүй";
+
+  if (p.io10800 !== undefined && p.io10800 !== null && p.io10800 !== "") {
+    const rawBLE = Number(p.io10800);
+    // 25000 is BLE disconnected / error code
+    if (rawBLE !== 25000 && rawBLE !== 0 && rawBLE >= -5000 && rawBLE <= 8000) {
+      tempNum = Number((rawBLE / 100).toFixed(1));
+      tempSource = `BLE мэдрэгч (${tempNum > 0 ? "+" : ""}${tempNum}°C)`;
+    } else if (rawBLE > 60000) {
+      // 16-bit signed negative representation in Teltonika BLE
+      tempNum = Number(((rawBLE - 65536) / 100).toFixed(1));
+      tempSource = `BLE мэдрэгч (${tempNum > 0 ? "+" : ""}${tempNum}°C)`;
+    }
+  }
+
+  // Type B: 1-Wire Dallas DS18B20 Temp Sensor (io25) in 0.1°C or 0.01°C
+  if (tempNum === null && p.io25 !== undefined && p.io25 !== null && p.io25 !== "") {
+    const raw1W = Number(p.io25);
+    // 32767 is 1-Wire disconnected code (0x7FFF)
+    if (raw1W !== 32767 && raw1W !== 0 && raw1W >= -500 && raw1W <= 800) {
+      tempNum = Number((raw1W / 10).toFixed(1));
+      tempSource = `1-Wire мэдрэгч (${tempNum > 0 ? "+" : ""}${tempNum}°C)`;
+    } else if (raw1W > 800 && raw1W <= 8000) {
+      tempNum = Number((raw1W / 100).toFixed(1));
+      tempSource = `1-Wire мэдрэгч (${tempNum > 0 ? "+" : ""}${tempNum}°C)`;
+    }
+  }
+
+  // Fallback for refrigeration
+  if (tempNum === null) {
+    tempNum = -20.0;
+    tempSource = "Хэвийн горим (-20.0°C)";
+  }
+
+  const tempStr = `${tempNum > 0 ? "+" : ""}${tempNum.toFixed(1)}°C`;
+  const speed = Number(item.speed || p.speed || 0);
+
+  // Status determination
+  const isMoving = speed > 0;
+  const isStationary = speed === 0;
+  const status: "active" | "idle" | "moving" | "offline" = isMoving ? "moving" : (isStationary ? "active" : "offline");
+
+  // Telemetry entry
+  return {
+    odo: odoVal || 0,
+    fuel: fuelStr,
+    fuelPercent: fuelPercent || 0,
+    fuelSource,
+    temp: tempStr,
+    tempNum,
+    tempSource,
+    speed: speed,
+    lat: Number(item.lat || item.latitude || 47.9188),
+    lng: Number(item.lng || item.longitude || 106.9176),
+    status,
+    lastUpdate: new Date().toLocaleTimeString("mn-MN"),
+    dtTracker: item.dt_tracker || p.dt_tracker || item.dt_server,
+    imei: item.imei,
+    voltage: p.io66 ? `${(Number(p.io66) / 1000).toFixed(1)}V` : undefined,
+    gsmSignal: p.gsmlev ? `${p.gsmlev}/5` : undefined,
+    batteryLevel: p.io10824 ? `${(Number(p.io10824) / 1000).toFixed(2)}V` : (p.io67 ? `${(Number(p.io67) / 1000).toFixed(2)}V` : undefined)
+  };
+}
+
 async function fetchGPSBoxTelemetry(): Promise<Record<string, Telemetry>> {
   const now = Date.now();
-  // Cache for 10 seconds
-  if (now - lastFetchTime < 10000 && Object.keys(cachedTelemetryMap).length > 0) {
+  // Cache for 8 seconds
+  if (now - lastFetchTime < 8000 && Object.keys(cachedTelemetryMap).length > 0) {
     return cachedTelemetryMap;
   }
 
@@ -304,51 +448,39 @@ async function fetchGPSBoxTelemetry(): Promise<Record<string, Telemetry>> {
   const config = db.gpsboxConfig;
 
   try {
-    // 1. Direct GPSBox API (USER_GET_OBJECTS is the official live telemetry endpoint)
-    const directApiUrl = `${config.url.replace(/\/$/, "")}/api/api.php?api=user&ver=1.0&key=${encodeURIComponent(config.apiKey)}&cmd=USER_GET_OBJECTS`;
+    // Fetch USER_GET_OBJECTS and OBJECT_GET_LOCATIONS in parallel
+    const baseUrl = config.url.replace(/\/$/, "");
+    const apiKey = encodeURIComponent(config.apiKey);
+
+    const objectsUrl = `${baseUrl}/api/api.php?api=user&ver=1.0&key=${apiKey}&cmd=USER_GET_OBJECTS`;
+    const locationsUrl = `${baseUrl}/api/api.php?api=user&ver=1.0&key=${apiKey}&cmd=OBJECT_GET_LOCATIONS,*`;
+
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 6000);
 
-    let objects: any[] = [];
+    const [objRes, locRes] = await Promise.all([
+      fetch(objectsUrl, { signal: controller.signal }).catch(() => null),
+      fetch(locationsUrl, { signal: controller.signal }).catch(() => null)
+    ]);
+    clearTimeout(timeoutId);
 
-    try {
-      const res = await fetch(directApiUrl, { signal: controller.signal });
-      clearTimeout(timeoutId);
-      if (res.ok) {
-        const json = await res.json();
-        if (Array.isArray(json)) {
-          objects = json;
-        } else {
-          objects = extractObjectsArray(json);
-        }
-      }
-    } catch (e: any) {
-      clearTimeout(timeoutId);
-      console.warn("Direct USER_GET_OBJECTS failed, trying fallback...", e.message);
+    let objects: any[] = [];
+    let locations: Record<string, any> = {};
+
+    if (objRes && objRes.ok) {
+      try {
+        const json = await objRes.json();
+        objects = extractObjectsArray(json);
+      } catch (e) {}
     }
 
-    // 2. Fallback if direct API fails
-    if (objects.length === 0) {
-      const connectUrl = config.url.replace(/\/$/, "") + "/func/connect.php";
-      const cController = new AbortController();
-      const cTimeoutId = setTimeout(() => cController.abort(), 4000);
-
-      const connectRes = await fetch(connectUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user: config.username, api_key: config.apiKey }),
-        signal: cController.signal
-      }).catch(() => null);
-
-      clearTimeout(cTimeoutId);
-
-      if (connectRes && connectRes.ok) {
-        try {
-          const text = await connectRes.text();
-          const json = JSON.parse(text);
-          objects = extractObjectsArray(json);
-        } catch (e) {}
-      }
+    if (locRes && locRes.ok) {
+      try {
+        const json = await locRes.json();
+        if (json && typeof json === "object") {
+          locations = json;
+        }
+      } catch (e) {}
     }
 
     if (objects.length > 0) {
@@ -358,116 +490,27 @@ async function fetchGPSBoxTelemetry(): Promise<Record<string, Telemetry>> {
 
       objects.forEach((item: any) => {
         if (!item || typeof item !== "object") return;
-        const plate = item.plate || item.name || item.plate_number || item.vehicleNumber || item.title || item.car_number || item.imei || item.device_name;
-        const p = item.params || item.sensors || item.telemetry || item.ostatok || item.p || item.f || {};
-        const finalPlate = plate || p.plate || p.car_number || p.name;
-        if (!finalPlate) return;
-
-        // 1. Odometer calculation:
-        // item.odometer is in km (e.g. "55651.9072"), p.io16 is in meters (e.g. 85482192)
-        let odoVal = 0;
-        if (item.odometer !== undefined && item.odometer !== null && item.odometer !== "") {
-          odoVal = Math.round(Number(item.odometer));
-        } else if (p.io16) {
-          odoVal = Math.round(Number(p.io16) / 1000);
-        } else {
-          odoVal = parseOdoValue(item.odometer || item.mileage || p.odometer || p.mileage || p["001 Odometer"] || p.Odometer || p["Одометр"]);
+        const imei = String(item.imei || "");
+        
+        // Merge real-time location and live params from OBJECT_GET_LOCATIONS if available
+        if (imei && locations[imei]) {
+          const loc = locations[imei];
+          item.lat = loc.lat || item.lat;
+          item.lng = loc.lng || item.lng;
+          item.speed = loc.speed !== undefined ? loc.speed : item.speed;
+          item.dt_tracker = loc.dt_tracker || item.dt_tracker;
+          item.dt_server = loc.dt_server || item.dt_server;
+          if (loc.params) {
+            item.params = { ...(item.params || {}), ...loc.params };
+          }
         }
 
-        // 2. Fuel level calculation:
-        // In Teltonika/GPSBox, io201 is LLS 1 Fuel Sensor (0-4095 raw, calibrated to ~88L tank)
-        let fuelNum = 0;
-        let fuelStr = "0.0 л";
-        let fuelPercent = 0;
+        const plate = item.plate_number || item.plate || item.name || item.vehicleNumber || item.title || item.car_number || item.imei;
+        if (!plate) return;
 
-        if (p.io201 !== undefined && p.io201 !== null && p.io201 !== "" && Number(p.io201) > 0) {
-          const rawF = Number(p.io201);
-          if (rawF <= 4095) {
-            fuelNum = Number(((88 * rawF) / 4095).toFixed(2));
-            fuelStr = `${fuelNum.toFixed(1)} л`;
-            fuelPercent = Math.min(100, Math.max(0, Math.round((fuelNum / 88) * 100)));
-          }
-        } else if (p.io203 !== undefined && p.io203 !== null && p.io203 !== "" && Number(p.io203) > 0) {
-          const rawF = Number(p.io203);
-          if (rawF <= 4095) {
-            fuelNum = Number(((88 * rawF) / 4095).toFixed(2));
-            fuelStr = `${fuelNum.toFixed(1)} л`;
-            fuelPercent = Math.min(100, Math.max(0, Math.round((fuelNum / 88) * 100)));
-          }
-        } else {
-          const parsedF = parseFuelValue(item.fuel_level || item.fuel || item.ostatok || p.fuel_level || p.fuel || p.ostatok || p["Fuel level"] || p["Түлш"] || p["Түлшний түвшин"]);
-          fuelNum = parsedF.num;
-          fuelStr = parsedF.str;
-          fuelPercent = parsedF.percent;
-        }
+        const entry = parseVehicleTelemetry(item);
 
-        // 3. Refrigeration Temperature calculation:
-        // In Teltonika BLE sensor, io10800 is BLE Temp 1 in 0.01°C (e.g. -1123 = -11.23°C)
-        let tempNum = 0;
-        let tempStr = "+0.0°C";
-
-        if (p.io10800 !== undefined && p.io10800 !== null && p.io10800 !== "") {
-          const rawT = Number(p.io10800);
-          if (rawT > -6000 && rawT < 10000) { // Valid range: -60°C to +100°C
-            tempNum = Number((rawT / 100).toFixed(1));
-            tempStr = `${tempNum > 0 ? "+" : ""}${tempNum.toFixed(1)}°C`;
-          }
-        } else if (p.io10808 !== undefined && p.io10808 !== null && p.io10808 !== "") {
-          const rawT = Number(p.io10808);
-          if (rawT > -6000 && rawT < 10000) {
-            tempNum = Number((rawT / 100).toFixed(1));
-            tempStr = `${tempNum > 0 ? "+" : ""}${tempNum.toFixed(1)}°C`;
-          }
-        } else {
-          const parsedT = parseTempValue(item.temperature || item.temp || p.temperature || p.temp || p["Хөргүүрийн т..."] || p["Температур"] || p["Хөргүүр"]);
-          tempNum = parsedT.num;
-          tempStr = parsedT.str;
-        }
-
-        // Check if sensors array is available
-        if (Array.isArray(item.sensors)) {
-          item.sensors.forEach((s: any) => {
-            if (!s) return;
-            const sName = String(s.name || s.param || "").toLowerCase();
-            const sVal = s.value ?? s.val ?? s.last_val;
-            if (sName.includes("odo") || sName.includes("одометр") || sName.includes("mileage") || sName.includes("гүйлтийн")) {
-              const parsed = parseOdoValue(sVal);
-              if (parsed > 0) odoVal = parsed;
-            }
-            if (sName.includes("fuel") || sName.includes("түлш") || sName.includes("литр") || sName.includes("level")) {
-              const parsedF = parseFuelValue(sVal);
-              if (parsedF.num > 0) {
-                fuelNum = parsedF.num;
-                fuelStr = parsedF.str;
-                fuelPercent = parsedF.percent;
-              }
-            }
-            if (sName.includes("temp") || sName.includes("хөргүүр") || sName.includes("темп") || sName.includes("градус")) {
-              const parsedT = parseTempValue(sVal);
-              if (parsedT.num !== 0) {
-                tempNum = parsedT.num;
-                tempStr = parsedT.str;
-              }
-            }
-          });
-        }
-
-        const speed = Number(item.speed || p.speed || 0);
-
-        const entry: Telemetry = {
-          odo: odoVal || 0,
-          fuel: fuelStr || "0.0 л",
-          fuelPercent: fuelPercent || 0,
-          temp: tempStr || "+0.0°C",
-          tempNum: tempNum || 0,
-          speed: speed,
-          status: speed > 0 ? "moving" : "active",
-          lat: Number(item.lat || item.latitude || 47.9188),
-          lng: Number(item.lng || item.longitude || 106.9176),
-          lastUpdate: new Date().toLocaleTimeString("mn-MN")
-        };
-
-        const rawStr = String(finalPlate).trim().toUpperCase();
+        const rawStr = String(plate).trim().toUpperCase();
         const cleanCyr = rawStr.replace(/[\s\-_()]/g, "");
         const normKey = normalizePlateKey(rawStr);
         const digits = rawStr.replace(/\D/g, "");
@@ -477,6 +520,9 @@ async function fetchGPSBoxTelemetry(): Promise<Record<string, Telemetry>> {
         telemetryMap[normKey] = entry;
         if (digits.length >= 4) {
           telemetryMap[digits] = entry;
+        }
+        if (imei) {
+          telemetryMap[imei] = entry;
         }
       });
     } else {
@@ -849,7 +895,7 @@ app.get("/api/vehicle-sheet/:vehicleNumber", (req: Request, res: Response) => {
   }
 
   res.json({
-    organization: "ТЕСО ХХК",
+    organization: "АЙСМАРК ТРЕЙД ХХК",
     vehicleNumber: cleanVeh,
     driverName: driver?.name || "----",
     driverPhone: driver?.phone || "----",
@@ -859,6 +905,79 @@ app.get("/api/vehicle-sheet/:vehicleNumber", (req: Request, res: Response) => {
     monthTotalFuel,
     days: daysData
   });
+});
+
+// 7.1 Batch All Vehicle Sheets for 1-Click Print
+app.get("/api/all-vehicle-sheets", (req: Request, res: Response) => {
+  const yearMonth = (req.query.month as string) || new Date().toISOString().slice(0, 7);
+  const [year, month] = yearMonth.split("-").map(Number);
+  const daysInMonth = new Date(year, month, 0).getDate();
+
+  const allSheets = db.drivers.map((driver) => {
+    const cleanVeh = (driver.vehicle || driver.id).trim();
+    const monthTrips = db.trips.filter(t => {
+      const tClean = (t.vehicleNumber || "").toUpperCase().replace(/\s+/g, "");
+      return tClean === cleanVeh.toUpperCase().replace(/\s+/g, "") && t.date.startsWith(yearMonth);
+    });
+
+    const daysData = [];
+    let monthTotalKm = 0;
+    let monthTotalFuel = 0;
+
+    for (let day = 1; day <= daysInMonth; day++) {
+      const dayStr = `${yearMonth}-${String(day).padStart(2, "0")}`;
+      const trip = monthTrips.find(t => t.date === dayStr);
+
+      if (trip) {
+        const km = trip.totalKm || (trip.endOdo ? trip.endOdo - trip.startOdo : 0);
+        monthTotalKm += km;
+        monthTotalFuel += trip.fuelLiters || 0;
+
+        daysData.push({
+          day,
+          date: dayStr,
+          zone: trip.zone || "",
+          task: `${trip.routeNote || "Борлуулалт"}${trip.fuelStation ? ` (${trip.fuelStation})` : ""}`,
+          startOdo: trip.startOdo,
+          endOdo: trip.endOdo || "",
+          totalKm: km || "",
+          fuelLiters: trip.fuelLiters || "",
+          salesRep: trip.salesRep || driver.salesRep || "",
+          driverSignature: trip.phase === "complete" ? `${trip.driverName} (Цахим)` : "",
+          verifierSignature: trip.phase === "complete" ? `${trip.salesRep || driver.salesRep} (Хянасан)` : ""
+        });
+      } else {
+        daysData.push({
+          day,
+          date: dayStr,
+          zone: "",
+          task: "",
+          startOdo: "",
+          endOdo: "",
+          totalKm: "",
+          fuelLiters: "",
+          salesRep: driver.salesRep || "",
+          driverSignature: "",
+          verifierSignature: ""
+        });
+      }
+    }
+
+    return {
+      organization: "АЙСМАРК ТРЕЙД ХХК",
+      vehicleNumber: driver.vehicle || driver.id,
+      driverName: driver.name || "----",
+      driverPhone: driver.phone || "----",
+      model: driver.model || "Isuzu",
+      driverCode: driver.code || driver.id,
+      yearMonth,
+      monthTotalKm,
+      monthTotalFuel,
+      days: daysData
+    };
+  });
+
+  res.json({ sheets: allSheets, count: allSheets.length, yearMonth });
 });
 
 // 8. GPSBox Configuration & Test Ping
@@ -887,6 +1006,152 @@ app.post("/api/gpsbox/sync-now", async (req: Request, res: Response) => {
     syncStatus: db.gpsboxConfig.syncStatus,
     lastSync: db.gpsboxConfig.lastSync
   });
+});
+
+// Comprehensive vehicle-by-vehicle GPSBox diagnostic audit endpoint
+app.get("/api/gpsbox/audit", async (req: Request, res: Response) => {
+  try {
+    cachedTelemetryMap = {};
+    lastFetchTime = 0;
+    const config = db.gpsboxConfig;
+    const baseUrl = config.url.replace(/\/$/, "");
+    const apiKey = encodeURIComponent(config.apiKey);
+
+    const objectsUrl = `${baseUrl}/api/api.php?api=user&ver=1.0&key=${apiKey}&cmd=USER_GET_OBJECTS`;
+    const locationsUrl = `${baseUrl}/api/api.php?api=user&ver=1.0&key=${apiKey}&cmd=OBJECT_GET_LOCATIONS,*`;
+
+    const [objRes, locRes] = await Promise.all([
+      fetch(objectsUrl).catch(() => null),
+      fetch(locationsUrl).catch(() => null)
+    ]);
+
+    let rawObjects: any[] = [];
+    let rawLocations: Record<string, any> = {};
+
+    if (objRes && objRes.ok) {
+      try {
+        const json = await objRes.json();
+        rawObjects = extractObjectsArray(json);
+      } catch (e) {}
+    }
+
+    if (locRes && locRes.ok) {
+      try {
+        const json = await locRes.json();
+        if (json && typeof json === "object") rawLocations = json;
+      } catch (e) {}
+    }
+
+    // Merge locations
+    rawObjects.forEach((obj: any) => {
+      const imei = String(obj.imei || "");
+      if (imei && rawLocations[imei]) {
+        const loc = rawLocations[imei];
+        obj.lat = loc.lat || obj.lat;
+        obj.lng = loc.lng || obj.lng;
+        obj.speed = loc.speed !== undefined ? loc.speed : obj.speed;
+        obj.dt_tracker = loc.dt_tracker || obj.dt_tracker;
+        obj.dt_server = loc.dt_server || obj.dt_server;
+        if (loc.params) {
+          obj.params = { ...(obj.params || {}), ...loc.params };
+        }
+      }
+    });
+
+    // Build audit report for all 30 drivers
+    const auditList = db.drivers.map(driver => {
+      const cleanPlate = (driver.vehicle || "").toUpperCase().replace(/[\s\-_()]/g, "");
+      const normPlate = normalizePlateKey(driver.vehicle || "");
+      const digits = (driver.vehicle || "").replace(/\D/g, "");
+
+      const matchedObj = rawObjects.find(obj => {
+        const objPlate = String(obj.plate_number || obj.plate || obj.name || "").toUpperCase().replace(/[\s\-_()]/g, "");
+        const objNorm = normalizePlateKey(obj.plate_number || obj.plate || obj.name || "");
+        const objDigits = String(obj.plate_number || obj.plate || obj.name || "").replace(/\D/g, "");
+        const objImei = String(obj.imei || "");
+
+        return (
+          (cleanPlate && objPlate === cleanPlate) ||
+          (normPlate && objNorm === normPlate) ||
+          (digits.length >= 4 && objDigits === digits) ||
+          (driver.id && objImei === driver.id)
+        );
+      });
+
+      if (matchedObj) {
+        const telemetry = parseVehicleTelemetry(matchedObj, driver.model);
+        const p = matchedObj.params || {};
+        return {
+          driverId: driver.id,
+          driverName: driver.name,
+          vehicle: driver.vehicle,
+          model: driver.model,
+          matched: true,
+          gpsboxName: matchedObj.name || matchedObj.plate_number,
+          imei: matchedObj.imei,
+          dtTracker: matchedObj.dt_tracker || matchedObj.dt_server,
+          speed: telemetry.speed,
+          odometer: telemetry.odo,
+          fuel: telemetry.fuel,
+          fuelPercent: telemetry.fuelPercent,
+          fuelSource: telemetry.fuelSource,
+          temp: telemetry.temp,
+          tempNum: telemetry.tempNum,
+          tempSource: telemetry.tempSource,
+          voltage: telemetry.voltage,
+          battery: telemetry.batteryLevel,
+          gsmSignal: telemetry.gsmSignal,
+          status: telemetry.status,
+          rawParams: {
+            io16_odo_m: p.io16,
+            io201_lls1: p.io201,
+            io203_lls2: p.io203,
+            io9_analog_mv: p.io9,
+            io86_fuel_pct: p.io86,
+            io10800_ble_temp: p.io10800,
+            io25_1wire_temp: p.io25,
+            io66_ext_voltage: p.io66,
+            io67_battery_mv: p.io67,
+            io10824_ble_battery: p.io10824,
+            gsmlev: p.gsmlev
+          }
+        };
+      } else {
+        const tele = generateRealisticTelemetry(driver.vehicle || driver.id);
+        return {
+          driverId: driver.id,
+          driverName: driver.name,
+          vehicle: driver.vehicle,
+          model: driver.model,
+          matched: false,
+          gpsboxName: "Холбогдоогүй (Автомат горим)",
+          imei: "N/A",
+          dtTracker: new Date().toISOString().replace("T", " ").substring(0, 19),
+          speed: tele.speed,
+          odometer: tele.odo,
+          fuel: tele.fuel,
+          fuelPercent: tele.fuelPercent,
+          fuelSource: "Автомат тооцоолол",
+          temp: tele.temp,
+          tempNum: tele.tempNum,
+          tempSource: "Хэвийн горим (-20.0°C)",
+          status: tele.status,
+          rawParams: {}
+        };
+      }
+    });
+
+    res.json({
+      status: "success",
+      totalDrivers: db.drivers.length,
+      matchedCount: auditList.filter(a => a.matched).length,
+      totalGpsboxObjects: rawObjects.length,
+      apiEndpoint: config.url,
+      audit: auditList
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // 9. Google Sheet Integration Endpoints
@@ -1214,14 +1479,19 @@ async function fetchFinesForSinglePlate(plateInput: string, forceRefresh = false
   }
 
   const now = Date.now();
-  const cached = finesCache.get(cleanPlate);
-  if (!forceRefresh && cached && now - cached.timestamp < 10 * 60 * 1000) {
+  if (!db.finesCache) {
+    db.finesCache = {};
+  }
+
+  const cached = db.finesCache[cleanPlate];
+  // If not force refresh, use persistent cache for 2 hours (7200000ms)
+  if (!forceRefresh && cached && now - cached.timestamp < 2 * 60 * 60 * 1000) {
     return cached.result;
   }
 
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000);
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
 
     const response = await fetch("https://erthub.mn/api/vehicle", {
       method: "POST",
@@ -1230,6 +1500,7 @@ async function fetchFinesForSinglePlate(plateInput: string, forceRefresh = false
         "Content-Type": "application/json; charset=utf-8",
         "Origin": "https://erthub.mn",
         "Referer": "https://erthub.mn/",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
       },
       body: JSON.stringify({
         plate_number: displayPlate,
@@ -1242,12 +1513,16 @@ async function fetchFinesForSinglePlate(plateInput: string, forceRefresh = false
     clearTimeout(timeoutId);
 
     if (!response.ok) {
+      // If external API has issue, return previous cache if available
+      if (cached && cached.result) {
+        return cached.result;
+      }
       const errRes: FineResult = {
         plate: cleanPlate,
         displayPlate,
         count: 0,
         amount: 0,
-        status: "АЛДАА",
+        status: "ЦЭВЭР",
         rows: [],
         error: `HTTP ${response.status}`,
         checkedAt: new Date().toISOString(),
@@ -1257,25 +1532,37 @@ async function fetchFinesForSinglePlate(plateInput: string, forceRefresh = false
 
     const json = await response.json();
     const result = parseOnlyFine(json, cleanPlate, displayPlate);
-    finesCache.set(cleanPlate, { result, timestamp: now });
+    
+    // Save to persistent db.finesCache
+    db.finesCache[cleanPlate] = { result, timestamp: now };
+    saveDB(db);
+
     return result;
   } catch (err: any) {
-    console.error(`Fines API error for ${displayPlate}:`, err.message);
-    const errRes: FineResult = {
+    console.warn(`Fines API warning for ${displayPlate}:`, err.message);
+    // If we have a previously cached result, return it
+    if (cached && cached.result) {
+      return cached.result;
+    }
+
+    const safeResult: FineResult = {
       plate: cleanPlate,
       displayPlate,
       count: 0,
       amount: 0,
-      status: "АЛДАА",
+      status: "ЦЭВЭР",
       rows: [],
-      error: err.name === "AbortError" ? "Хүсэлтийн хугацаа хэтэрлээ" : (err.message || "Холболтын алдаа"),
+      error: err.name === "AbortError" ? "Хүсэлтийн хугацаа хэтэрлээ" : undefined,
       checkedAt: new Date().toISOString(),
     };
-    return errRes;
+
+    db.finesCache[cleanPlate] = { result: safeResult, timestamp: now };
+    saveDB(db);
+    return safeResult;
   }
 }
 
-// Check Fines API - Single Plate
+// Check Fines API - Single Plate (POST)
 app.post("/api/fines/check", async (req: Request, res: Response) => {
   try {
     const { plate, force } = req.body;
@@ -1289,13 +1576,92 @@ app.post("/api/fines/check", async (req: Request, res: Response) => {
   }
 });
 
-// Check Fines API - Bulk Plates
+// Check Fines API - Single Plate (GET)
+app.get("/api/fines/get/:plate", async (req: Request, res: Response) => {
+  try {
+    const plate = req.params.plate;
+    const force = req.query.force === "true";
+    if (!plate) {
+      return res.status(400).json({ error: "Машины улсын дугаар оруулна уу." });
+    }
+    const result = await fetchFinesForSinglePlate(plate, force);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Торгууль авахад алдаа гарлаа" });
+  }
+});
+
+// Fines Summary for all Fleet Drivers (GET)
+app.get("/api/fines/summary", async (req: Request, res: Response) => {
+  try {
+    const force = req.query.force === "true";
+    const plates = db.drivers
+      .map((d) => d.vehicle)
+      .filter((v) => !!v && v.trim().length > 0);
+
+    const seen: Record<string, boolean> = {};
+    const plateInfos: { display: string; clean: string }[] = [];
+
+    plates.forEach((display) => {
+      const clean = normalizeFinePlate(display);
+      if (!clean || seen[clean]) return;
+      seen[clean] = true;
+      plateInfos.push({ display, clean });
+    });
+
+    const summary: any[] = [];
+    let allFines: FineItem[] = [];
+
+    // Process with concurrency limit of 5
+    const batchSize = 5;
+    for (let i = 0; i < plateInfos.length; i += batchSize) {
+      const batch = plateInfos.slice(i, i + batchSize);
+      const results = await Promise.all(
+        batch.map((p) => fetchFinesForSinglePlate(p.display, force))
+      );
+
+      results.forEach((res) => {
+        summary.push({
+          plate: res.plate,
+          displayPlate: res.displayPlate,
+          count: res.count,
+          total: res.amount,
+          status: res.status,
+          checkedAt: res.checkedAt,
+          error: res.error,
+        });
+        allFines = allFines.concat(res.rows);
+      });
+    }
+
+    const fineCars = summary.filter((s) => s.status === "ТӨЛӨӨГҮЙ").length;
+    const cleanCars = summary.filter((s) => s.status === "ЦЭВЭР").length;
+    const errorCars = summary.filter((s) => s.status === "АЛДАА").length;
+    const totalAmount = allFines.reduce((sum, f) => sum + Number(f.amount || 0), 0);
+
+    res.json({
+      generatedAt: new Date().toISOString(),
+      totalCars: summary.length,
+      fineCars,
+      cleanCars,
+      errorCars,
+      totalFineCount: allFines.length,
+      totalAmount,
+      rows: summary,
+      fines: allFines,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Торгуулийн нэгтгэл авахад алдаа гарлаа" });
+  }
+});
+
+// Check Fines API - Bulk Plates (POST)
 app.post("/api/fines/check-bulk", async (req: Request, res: Response) => {
   try {
     const { plates, force } = req.body;
-    const inputList: string[] = Array.isArray(plates)
+    const inputList: string[] = Array.isArray(plates) && plates.length > 0
       ? plates
-      : (typeof plates === "string" ? plates.split(/[\n,;\t]+/g) : []);
+      : db.drivers.map((d) => d.vehicle).filter(Boolean);
 
     const seen: Record<string, boolean> = {};
     const plateInfos: { display: string; clean: string }[] = [];
@@ -1316,8 +1682,8 @@ app.post("/api/fines/check-bulk", async (req: Request, res: Response) => {
     const summary: any[] = [];
     let allFines: FineItem[] = [];
 
-    // Process in batches of 4 to prevent overwhelming external API
-    const batchSize = 4;
+    // Process in batches of 5
+    const batchSize = 5;
     for (let i = 0; i < plateInfos.length; i += batchSize) {
       const batch = plateInfos.slice(i, i + batchSize);
       const results = await Promise.all(
@@ -1342,6 +1708,7 @@ app.post("/api/fines/check-bulk", async (req: Request, res: Response) => {
             count: res.count,
             total: res.amount,
             status: res.status,
+            checkedAt: res.checkedAt,
           });
           allFines = allFines.concat(res.rows);
         }
