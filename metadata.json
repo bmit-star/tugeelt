@@ -1,6 +1,6 @@
 {
-  "name": "Fleet Digital • Жолоочийн Замын Хуудас & GPSBox Телематик",
-  "description": "GPSBox FMS2 системтэй шууд холбогдсон тээврийн хэрэгслийн телематик, жолоочийн замын хуудас болон удирдлагын нэгдсэн платформ",
+  "name": "IMT Logistics • Transportation & Distribution Management System",
+  "description": "GPSBox FMS2 системтэй шууд холбогдсон тээврийн хэрэгслийн телематик, жолоочийн замын хуудас болон түгээлтийн нэгдсэн систем",
   "requestFramePermissions": [],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"

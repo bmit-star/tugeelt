@@ -214,25 +214,25 @@ export default function App() {
             <div>
               <div className="flex items-center gap-1.5 leading-none">
                 <span className="text-sm sm:text-base font-black tracking-tight text-white">
-                  FLEET DIGITAL
+                  IMT LOGISTICS
                 </span>
                 <span className="px-1.5 py-0.5 rounded text-[9px] font-black uppercase bg-sky-500/20 text-sky-300 border border-sky-400/30">
                   GPSBox
                 </span>
               </div>
               <span className="text-[10px] text-sky-200/70 hidden sm:block">
-                Замын хуудас & Телематик удирдлагын систем
+                Transportation & Distribution Management System
               </span>
             </div>
           </div>
 
-          {/* Driver Navbar Mode (Clean, focused view without admin clutter) */}
+          {/* Driver Navbar Mode (Clean, focused view without manager button) */}
           {currentRole === "driver" ? (
             <div className="flex items-center gap-2">
               {isDriverAuthenticated && currentDriver ? (
                 <button
                   onClick={handleDriverLogout}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-bold text-sky-200 transition-all border border-white/15"
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-bold text-sky-200 transition-all border border-white/15 cursor-pointer"
                   title="Бүсийн кодоос гарах / солих"
                 >
                   <KeyRound className="w-3.5 h-3.5 text-sky-300" />
@@ -251,22 +251,6 @@ export default function App() {
                   <span>Код оруулах</span>
                 </button>
               )}
-
-              <button
-                onClick={() => {
-                  if (isManagerAuthenticated()) {
-                    setRoleAndUrl("admin");
-                  } else {
-                    setLoginModalMode("manager");
-                    setShowLoginModal(true);
-                  }
-                }}
-                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-semibold text-slate-200 transition-all cursor-pointer"
-                title="Менежер / Админ хэсэг рүү шилжих"
-              >
-                <ShieldCheck className="w-3.5 h-3.5 text-sky-300" />
-                <span className="hidden sm:inline">Менежер</span>
-              </button>
             </div>
           ) : (
             /* Admin / Manager Mode (tugeelt.site/manager) */

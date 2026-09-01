@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { Driver } from "../types";
-import { Truck, ShieldCheck, ArrowRight, KeyRound, Lock, AlertTriangle } from "lucide-react";
+import { Truck, ShieldCheck, ArrowRight, Lock, AlertTriangle } from "lucide-react";
 
 const MANAGER_PASSWORD = "88051530";
 const MANAGER_AUTH_KEY = "fleet_manager_authenticated_session_v1";
@@ -22,7 +22,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
   isMandatory = false,
   initialMode = "driver"
 }) => {
-  const [activeTab, setActiveTab] = useState<"driver" | "manager">(initialMode);
+  const isManagerView = initialMode === "manager";
   const [driverCode, setDriverCode] = useState("");
   const [managerPassword, setManagerPassword] = useState("");
   const [driverError, setDriverError] = useState("");
@@ -79,57 +79,23 @@ export const LoginModal: React.FC<LoginModalProps> = ({
         
         {/* Top Header Logo */}
         <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-[#0878bd] to-sky-400 text-white flex items-center justify-center mx-auto mb-3.5 shadow-lg shadow-sky-900/20">
-          {activeTab === "manager" ? <ShieldCheck className="w-7 h-7" /> : <Truck className="w-7 h-7" />}
+          {isManagerView ? <ShieldCheck className="w-7 h-7" /> : <Truck className="w-7 h-7" />}
         </div>
 
         <h2 className="text-xl font-black text-[#123047] tracking-tight">
-          FLEET DIGITAL • Системд нэвтрэх
+          {isManagerView ? "IMT LOGISTICS • Менежерийн хэсэг" : "IMT LOGISTICS • Системд нэвтрэх"}
         </h2>
-        <p className="text-xs text-slate-500 mt-1 mb-4 leading-relaxed">
-          {activeTab === "manager"
-            ? "Парк удирдлага, хяналтын самбар болон нэгдсэн бүртгэл"
+        <p className="text-xs font-semibold text-[#0878bd] mt-0.5 mb-1">
+          Transportation & Distribution Management System
+        </p>
+        <p className="text-xs text-slate-500 mb-5 leading-relaxed">
+          {isManagerView
+            ? "Менежерийн эрхээр нэвтрэх нууц кодыг оруулна уу"
             : "Өөрийн бүсийн кодоо (M16, KA1...) оруулан замын хуудас руу нэвтэрнэ"}
         </p>
 
-        {/* 2 Tabs: Driver vs Manager */}
-        <div className="flex rounded-2xl bg-slate-100 p-1 mb-5 border border-slate-200">
-          <button
-            type="button"
-            onClick={() => {
-              setActiveTab("driver");
-              setDriverError("");
-              setManagerError("");
-            }}
-            className={`flex-1 py-2.5 rounded-xl text-xs sm:text-sm font-black transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-              activeTab === "driver"
-                ? "bg-white text-[#0878bd] shadow-sm"
-                : "text-slate-500 hover:text-slate-800"
-            }`}
-          >
-            <Truck className="w-4 h-4" />
-            <span>Жолооч</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              setActiveTab("manager");
-              setDriverError("");
-              setManagerError("");
-            }}
-            className={`flex-1 py-2.5 rounded-xl text-xs sm:text-sm font-black transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-              activeTab === "manager"
-                ? "bg-[#123047] text-white shadow-sm"
-                : "text-slate-500 hover:text-slate-800"
-            }`}
-          >
-            <ShieldCheck className="w-4 h-4" />
-            <span>Менежер / Админ</span>
-          </button>
-        </div>
-
-        {/* TAB 1: DRIVER FORM */}
-        {activeTab === "driver" ? (
+        {/* DRIVER LOGIN FORM (Only shown in driver mode) */}
+        {!isManagerView ? (
           <form onSubmit={handleDriverSubmit} className="space-y-3.5">
             <div>
               <div className="relative">
@@ -185,7 +151,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
                 <button
                   type="button"
                   onClick={onClose}
-                  className="text-xs text-slate-400 hover:text-slate-700"
+                  className="text-xs text-slate-400 hover:text-slate-700 cursor-pointer"
                 >
                   Хаах
                 </button>
@@ -193,7 +159,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
             )}
           </form>
         ) : (
-          /* TAB 2: MANAGER FORM */
+          /* MANAGER LOGIN FORM (Only shown when accessed via /manager link) */
           <form onSubmit={handleManagerSubmit} className="space-y-3.5">
             <div>
               <div className="relative">
@@ -229,17 +195,12 @@ export const LoginModal: React.FC<LoginModalProps> = ({
               <ArrowRight className="w-4 h-4" />
             </button>
 
-            <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200 text-left text-xs text-slate-600">
-              <span className="font-bold text-slate-800">Шууд хандах хаяг: </span>
-              <span className="font-mono font-bold text-[#0878bd]">tugeelt.site/manager</span>
-            </div>
-
             {!isMandatory && onClose && (
               <div className="pt-1">
                 <button
                   type="button"
                   onClick={onClose}
-                  className="text-xs text-slate-400 hover:text-slate-700"
+                  className="text-xs text-slate-400 hover:text-slate-700 cursor-pointer"
                 >
                   Хаах
                 </button>
