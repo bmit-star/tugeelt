@@ -48,17 +48,18 @@ export const VehicleSheetModal: React.FC<VehicleSheetModalProps> = ({
 
   const handleExportCSV = () => {
     if (!sheetData) return;
+    const isProvince = Boolean(sheetData.isIMD || sheetData.waybillType === "PROVINCE_DISTRIBUTION");
     const headers = [
       "№",
       "Он сар",
-      "Явсан газрын нэр",
-      "Ажил үүрэг",
+      isProvince ? "Явсан чиглэл / Аймаг, сум" : "Явсан газрын нэр (Хот)",
+      isProvince ? "Ажил үүрэг / Томилолт" : "Ажил үүрэг",
       "Эхний км заалт",
       "Эцсийн заалт",
       "Нийт явсан км",
       "Хийсэн түлш",
       "Жолоочийн гарын үсэг",
-      "Хянасан /Худалдааны төлөөлөгч/"
+      isProvince ? "Хянасан (Сэлгээ / Менежер)" : "Хянасан (ХТ)"
     ];
 
     const rows = sheetData.days.map((d) => [
@@ -102,16 +103,23 @@ export const VehicleSheetModal: React.FC<VehicleSheetModalProps> = ({
             />
             <div>
               <h2 className="text-sm sm:text-base font-black text-[#123047] flex items-center gap-2">
-                <span>Борлуулалтын жолоочийн замын хуудас</span>
+                <span>{sheetData?.isIMD ? "Орон нутгийн түгээгчийн замын хуудас" : "Хотын борлуулалтын жолоочийн замын хуудас"}</span>
                 <span className="px-2 py-0.5 rounded bg-sky-100 text-[#0878bd] text-xs font-bold font-mono">
                   {vehicleNumber}
                 </span>
-                <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[11px] font-bold">
-                  A4 Landscape
+                <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${sheetData?.isIMD ? "bg-indigo-100 text-indigo-800" : "bg-emerald-100 text-emerald-800"}`}>
+                  {sheetData?.isIMD ? "IMD Орон нутаг" : "IMT Хот дотор"}
+                </span>
+                <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${
+                  sheetData?.autoFillEnabled !== false 
+                    ? "bg-emerald-50 text-emerald-700 border border-emerald-300" 
+                    : "bg-amber-50 text-amber-700 border border-amber-300"
+                }`}>
+                  {sheetData?.autoFillEnabled !== false ? "Замын хуудас : Асаалттай" : "Замын хуудас : Гараар"}
                 </span>
               </h2>
               <p className="text-[11px] text-slate-500">
-                Маягтын индекс: BS/C-03-25/ATD-13 (Хувилбар: 2)
+                Индекс: {sheetData?.isIMD ? "05/B-09-26/IMD-12 (Орон нутаг)" : "05/B-09-26/ATD-12 (Хот дотор)"} • {sheetData?.driverRole || "ТҮГЭЭГЧ"}
               </p>
             </div>
           </div>

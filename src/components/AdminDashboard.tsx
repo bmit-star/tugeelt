@@ -2,6 +2,13 @@ import React, { useState, useEffect, useMemo } from "react";
 import { Driver, TripLog, GPSBoxConfig, AppDataResponse, BulkFinesResult, FineRecord } from "../types";
 import { API } from "../services/api";
 import { BatchWaybillPrintModal } from "./BatchWaybillPrintModal";
+import { WaybillEditModal } from "./WaybillEditModal";
+import { DriverAutoOdoConfigModal } from "./DriverAutoOdoConfigModal";
+import { WorkScheduleModal } from "./WorkScheduleModal";
+import { DatabaseBackupModal } from "./DatabaseBackupModal";
+import { IMDManagerView } from "./imd/IMDManagerView";
+import { DailyDriverAssignmentView } from "./DailyDriverAssignmentView";
+import { InternalFineReportView } from "./InternalFineReportView";
 import {
   Truck,
   Fuel,
@@ -36,7 +43,9 @@ import {
   ShieldAlert,
   FileText,
   CreditCard,
-  Info
+  Database,
+  Info,
+  BookOpen
 } from "lucide-react";
 
 interface AdminDashboardProps {
@@ -47,6 +56,7 @@ interface AdminDashboardProps {
   onOpenDriverManagement: (driver?: Driver, createNew?: boolean) => void;
   onOpenGoogleSheets: () => void;
   onShowToast: (msg: string, type?: "success" | "error" | "info") => void;
+  onOpenRegulation?: () => void;
 }
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({
@@ -56,9 +66,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onOpenVehicleSheet,
   onOpenDriverManagement,
   onOpenGoogleSheets,
-  onShowToast
+  onShowToast,
+  onOpenRegulation
 }) => {
-  const [activeTab, setActiveTab] = useState<"fleet" | "masterlog" | "gpsbox" | "fines">("fleet");
+  const [activeTab, setActiveTab] = useState<"fleet" | "daily_assignment" | "internal_fines" | "masterlog" | "imd" | "gpsbox" | "fines">("fleet");
   const [appData, setAppData] = useState<AppDataResponse | null>(null);
   const [trips, setTrips] = useState<TripLog[]>([]);
   const [loading, setLoading] = useState(true);
@@ -85,6 +96,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   
   const [syncingSheet, setSyncingSheet] = useState(false);
   const [showBatchPrintModal, setShowBatchPrintModal] = useState(false);
+  const [showWaybillEditModal, setShowWaybillEditModal] = useState(false);
+  const [editWaybillDriverId, setEditWaybillDriverId] = useState<string>("");
+  const [showAutoOdoConfigModal, setShowAutoOdoConfigModal] = useState(false);
+  const [autoOdoDriverId, setAutoOdoDriverId] = useState<string>("");
+  const [showWorkScheduleModal, setShowWorkScheduleModal] = useState(false);
+  const [showDatabaseBackupModal, setShowDatabaseBackupModal] = useState(false);
 
   // GPSBox Config State
   const [gpsConfig, setGpsConfig] = useState<GPSBoxConfig>({
@@ -111,6 +128,24 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       onShowToast("GPSBox аудит хийхэд алдаа гарлаа: " + err.message, "error");
     } finally {
       setLoadingAudit(false);
+    }
+  };
+
+  const [togglingAutoFill, setTogglingAutoFill] = useState(false);
+
+  const handleToggleGPSAutoFill = async () => {
+    if (togglingAutoFill) return;
+    setTogglingAutoFill(true);
+    try {
+      const nextState = !(gpsConfig.autoFillEnabled !== false);
+      const res = await API.toggleGPSAutoFill(nextState);
+      setGpsConfig(prev => ({ ...prev, autoFillEnabled: res.autoFillEnabled }));
+      onShowToast(res.message, res.autoFillEnabled ? "success" : "info");
+      onRefreshData();
+    } catch (err: any) {
+      onShowToast(err.message || "GPS авто бөглөлтийн төлөв өөрчлөхөд алдаа гарлаа", "error");
+    } finally {
+      setTogglingAutoFill(false);
     }
   };
 
@@ -156,7 +191,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
   useEffect(() => {
     loadData();
-    const timer = setInterval(() => loadData(false), 25000);
+    const timer = setInterval(() => {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") {
+        loadData(false);
+      }
+    }, 60000); // 60s live refresh (prevents 429 Rate Limit)
     return () => clearInterval(timer);
   }, [selectedDate]);
 
@@ -188,9 +227,83 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
   };
 
-  const handleExportSheetCsv = () => {
-    window.open("/api/sheet/export-csv", "_blank");
-    onShowToast("Google Sheet бүтцээрх 30 машины телематик CSV татаж байна...", "success");
+  const handleExportWaybillsCsv = async () => {
+    try {
+      onShowToast("Бүх жолоочийн замын хуудсыг CSV хэлбэрээр бэлтгэж байна...", "info");
+      const currentMonth = new Date().toISOString().slice(0, 7);
+      const res = await API.getAllVehicleSheets(currentMonth);
+      const sheets = res.sheets || [];
+
+      if (sheets.length === 0) {
+        onShowToast("Экспортлох замын хуудас олдсонгүй", "info");
+        return;
+      }
+
+      const headers = [
+        "Бүсийн код",
+        "Машины дугаар",
+        "Машины марк",
+        "Жолоочийн нэр",
+        "Утасны дугаар",
+        "Худалдааны төлөөлөгч",
+        "Маршрут / Чиглэл",
+        "Өдөр (№)",
+        "Огноо",
+        "Явсан газрын нэр",
+        "Ажил үүрэг",
+        "Эхний заалт (км)",
+        "Эцсийн заалт (км)",
+        "Нийт явсан км",
+        "Хийсэн түлш (л)",
+        "Жолоочийн гарын үсэг",
+        "Хянасан ХТ"
+      ];
+
+      const rows: (string | number)[][] = [];
+
+      sheets.forEach((sheet) => {
+        const code = (sheet as any).driverCode || (sheet as any).id || sheet.vehicleNumber;
+        const phone = (sheet as any).driverPhone || "";
+        const model = sheet.model || "";
+        const route = (sheet as any).defaultRoute || "";
+
+        sheet.days.forEach((d) => {
+          rows.push([
+            `"${code}"`,
+            `"${sheet.vehicleNumber}"`,
+            `"${model}"`,
+            `"${sheet.driverName}"`,
+            `"${phone}"`,
+            `"${d.salesRep || sheet.days[0]?.salesRep || ""}"`,
+            `"${(d.zone || route || "").replace(/"/g, '""')}"`,
+            d.day,
+            d.date,
+            `"${(d.zone || "").replace(/"/g, '""')}"`,
+            `"${(d.task || "").replace(/"/g, '""')}"`,
+            d.startOdo || "",
+            d.endOdo || "",
+            d.totalKm || "",
+            d.fuelLiters || "",
+            `"${d.driverSignature || ""}"`,
+            `"${d.verifierSignature || ""}"`
+          ]);
+        });
+      });
+
+      const csvContent = "\uFEFF" + [headers.join(","), ...rows.map((e) => e.join(","))].join("\r\n");
+      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.setAttribute("href", url);
+      link.setAttribute("download", `Zamiin_Huudas_${currentMonth}_All_${sheets.length}_Mashin.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      onShowToast(`Нийт ${sheets.length} машины замын хуудас цэвэр CSV-ээр амжилттай татагдлаа!`, "success");
+    } catch (err: any) {
+      onShowToast("CSV татахад алдаа гарлаа", "error");
+    }
   };
 
   const handleDeleteTrip = async (id: string) => {
@@ -285,11 +398,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   };
 
   const getFuelNum = (driver: any) => {
-    if (driver.apiFuelNum !== undefined && !isNaN(driver.apiFuelNum)) return driver.apiFuelNum;
-    if (driver.telemetry?.fuelPercent !== undefined) return driver.telemetry.fuelPercent;
+    if (driver.apiFuelNum !== undefined && !isNaN(driver.apiFuelNum)) return Number(driver.apiFuelNum);
+    if (driver.telemetry?.fuelNum !== undefined && !isNaN(driver.telemetry.fuelNum)) return Number(driver.telemetry.fuelNum);
     const str = driver.apiFuel || driver.telemetry?.fuel || "";
     const parsed = parseFloat(String(str).replace(/[^0-9.-]/g, ""));
-    return isNaN(parsed) ? 45.0 : parsed;
+    return isNaN(parsed) ? 0 : parsed;
   };
 
   // Filtered and Sorted drivers
@@ -313,7 +426,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       if (!matchSearch || !matchGroup) return false;
 
       // Status filter
-      const trip = appData?.tripStatus[d.id] || appData?.tripStatus[d.code];
+      const trip = appData?.tripStatus?.[d.id] || appData?.tripStatus?.[d.code];
       if (statusFilter === "started" && trip?.phase !== "started") return false;
       if (statusFilter === "complete" && trip?.phase !== "complete") return false;
       if (statusFilter === "not_started" && !!trip) return false;
@@ -348,8 +461,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         return getFuelNum(b) - getFuelNum(a); // Highest fuel first
       }
       if (sortBy === "diff_desc") {
-        const tripA = appData?.tripStatus[a.id] || appData?.tripStatus[a.code];
-        const tripB = appData?.tripStatus[b.id] || appData?.tripStatus[b.code];
+        const tripA = appData?.tripStatus?.[a.id] || appData?.tripStatus?.[a.code];
+        const tripB = appData?.tripStatus?.[b.id] || appData?.tripStatus?.[b.code];
         const diffA = tripA?.endOdo ? Math.abs((a.apiOdo || 0) - Number(tripA.endOdo)) : 0;
         const diffB = tripB?.endOdo ? Math.abs((b.apiOdo || 0) - Number(tripB.endOdo)) : 0;
         return diffB - diffA;
@@ -374,87 +487,169 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   }, [appData, drivers]);
 
   return (
-    <div className="w-full max-w-7xl mx-auto px-3 sm:px-6 py-4 space-y-5">
+    <div className="w-full max-w-7xl mx-auto px-3 sm:px-6 py-4 space-y-5 print:p-0 print:m-0 print:max-w-none">
+      <div className="space-y-5 print:hidden">
       
-      {/* Top Banner & Quick Actions */}
-      <div className="bg-gradient-to-r from-[#123047] via-[#0b4d79] to-[#0878bd] rounded-2xl p-5 sm:p-6 text-white shadow-xl flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2 mb-1 flex-wrap">
-            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-sky-400/20 text-sky-200 border border-sky-300/30">
-              Админ удирдлагын төв
-            </span>
-            <span className="flex items-center gap-1 text-xs text-emerald-300 font-semibold">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
-              GPSBox Realtime
-            </span>
-            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-400/30">
-              Google Sheet Холбогдсон
-            </span>
+      {/* Management Toolbar (Minimal, tidy & mobile-optimized) */}
+      <section id="manager-toolbar-section" className="bg-slate-900 border border-slate-800 rounded-2xl p-3 sm:p-4 text-white shadow-sm">
+        {/* Row 1: Primary Actions */}
+        <div className="flex flex-wrap items-center justify-between gap-2.5">
+          <div className="flex items-center gap-2 flex-wrap w-full sm:w-auto">
+            {/* 1. GPS Sync */}
+            <button
+              onClick={handleManualSync}
+              disabled={refreshing}
+              className="flex-1 sm:flex-initial h-10 px-3.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 text-xs font-black flex items-center justify-center gap-2 transition-all shadow-sm active:scale-95 disabled:opacity-50 cursor-pointer"
+              title="GPSBox сүүлийн заалтуудыг шууд татах"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? "animate-spin" : ""}`} />
+              <span>{refreshing ? "Татаж байна..." : "GPS Татах"}</span>
+            </button>
+
+            {/* 2. GPS Auto-Fill Toggle */}
+            <button
+              onClick={handleToggleGPSAutoFill}
+              disabled={togglingAutoFill}
+              className={`h-10 px-3.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all border cursor-pointer active:scale-95 disabled:opacity-60 shadow-sm ${
+                gpsConfig.autoFillEnabled !== false
+                  ? "bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700"
+                  : "bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border-amber-500/40"
+              }`}
+              title="Замын хуудас : Гараар / Асаалттай горимыг бүх замын хуудсанд нэгэн зэрэг үйлчлүүлэх"
+            >
+              {togglingAutoFill ? (
+                <RefreshCw className="w-3.5 h-3.5 animate-spin text-slate-300" />
+              ) : (
+                <span className={`w-2 h-2 rounded-full ${gpsConfig.autoFillEnabled !== false ? "bg-emerald-400 animate-pulse" : "bg-amber-400"}`} />
+              )}
+              <Gauge className="w-3.5 h-3.5 text-slate-300" />
+              <span>Замын хуудас :</span>
+              <span className={`font-black ${gpsConfig.autoFillEnabled !== false ? "text-emerald-300" : "text-amber-300"}`}>
+                {togglingAutoFill ? "Хадгалж байна..." : (gpsConfig.autoFillEnabled !== false ? "Асаалттай" : "Гараар")}
+              </span>
+            </button>
+
+            {/* 3. Add Driver */}
+            <button
+              onClick={() => onOpenDriverManagement(undefined, true)}
+              className="h-10 px-3.5 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 text-xs font-bold flex items-center justify-center gap-1.5 transition-all active:scale-95 cursor-pointer"
+              title="Шинэ жолооч, машин бүртгэх"
+            >
+              <Users className="w-3.5 h-3.5 text-emerald-400" />
+              <span>+ Шинэ жолооч</span>
+            </button>
           </div>
-          <h1 className="text-xl sm:text-2xl font-black tracking-tight text-white">
-            Автопарк & Телематик хяналтын самбар
-          </h1>
-          <p className="text-xs sm:text-sm text-sky-100/80 mt-1 max-w-xl">
-            Бүх 30 жолооч нарын замын хуудасны явц, шууд түлш, хөргүүрийн температур, ODO заалтын нэгдсэн систем
-          </p>
+
+          {/* Quick status count pill on desktop */}
+          <div className="hidden lg:flex items-center gap-2 text-xs text-slate-400">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+            <span>Нийт <strong>{drivers.length || appData?.drivers.length || 0}</strong> тээврийн хэрэгсэл хянагдаж байна</span>
+          </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        {/* Row 2: Secondary Tools (Clean, minimal, 2-col/3-col on mobile, flex on desktop) */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:flex md:flex-wrap md:items-center gap-2 mt-3 pt-3 border-t border-slate-800/80">
           <button
-            onClick={() => onOpenDriverManagement(undefined, true)}
-            className="px-3.5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-black flex items-center gap-1.5 transition-all shadow-md active:scale-95"
-            title="Шинэ жолооч, машин, худалдааны төлөөлөгчийн мэдээлэл нэмэх"
+            onClick={() => {
+              setEditWaybillDriverId(drivers[0]?.id || "");
+              setShowWaybillEditModal(true);
+            }}
+            className="h-9 px-2.5 sm:px-3 rounded-xl bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700/60 text-slate-200 text-xs font-semibold flex items-center gap-2 transition-all active:scale-95 cursor-pointer truncate"
+            title="Жолоочийн сарын замын хуудасны өдрийн заалтуудыг засах, нөхөн бичих"
           >
-            <span className="text-base leading-none">➕</span>
-            <span>Шинэ жолооч нэмэх</span>
+            <FileText className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+            <span className="truncate">Замын хуудас засах</span>
+          </button>
+
+          <button
+            onClick={() => {
+              setAutoOdoDriverId(drivers[0]?.id || "");
+              setShowAutoOdoConfigModal(true);
+            }}
+            className="h-9 px-2.5 sm:px-3 rounded-xl bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700/60 text-slate-200 text-xs font-semibold flex items-center gap-2 transition-all active:scale-95 cursor-pointer truncate"
+            title="Жолооч бүрийн сарын эхний заалт, өдрийн км, ODO автомат байршуулалтыг тохируулах"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+            <span className="truncate">Авто-ODO тохиргоо</span>
           </button>
 
           <button
             onClick={() => setShowBatchPrintModal(true)}
-            className="px-3.5 py-2.5 rounded-xl bg-gradient-to-r from-sky-500 to-[#0878bd] hover:from-sky-400 hover:to-[#076ba8] text-white text-xs font-black flex items-center gap-1.5 transition-all shadow-md active:scale-95 border border-sky-300/40"
-            title="Бүх 30 машины замын хуудсыг нэгэн зэрэг A4 хөндлөн (Landscape) форматаар 1 даралтаар хэвлэх"
+            className="h-9 px-2.5 sm:px-3 rounded-xl bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700/60 text-slate-200 text-xs font-semibold flex items-center gap-2 transition-all active:scale-95 cursor-pointer truncate"
+            title="Бүх 30 машины замын хуудсыг A4 хөндлөн форматаар 1 даралтаар хэвлэх"
           >
-            <Printer className="w-4 h-4 text-sky-100" />
-            <span>Бүх замын хуудас хэвлэх (A4)</span>
+            <Printer className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+            <span className="truncate">Хэвлэх (A4)</span>
+          </button>
+
+          <button
+            onClick={() => setShowWorkScheduleModal(true)}
+            className="h-9 px-2.5 sm:px-3 rounded-xl bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700/60 text-slate-200 text-xs font-semibold flex items-center gap-2 transition-all active:scale-95 cursor-pointer truncate"
+            title="Ажлын болон амралтын хуваарь тохируулах"
+          >
+            <Calendar className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+            <span className="truncate">Цагийн хуваарь</span>
           </button>
 
           <button
             onClick={() => onOpenDriverManagement(undefined, false)}
-            className="px-3.5 py-2.5 rounded-xl bg-white/20 hover:bg-white/30 border border-white/25 text-xs font-bold text-white flex items-center gap-1.5 transition-all shadow-sm active:scale-95"
-            title="Бүх жолооч, машин, ХТ тохируулах, засах, устгах"
+            className="h-9 px-2.5 sm:px-3 rounded-xl bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700/60 text-slate-200 text-xs font-semibold flex items-center gap-2 transition-all active:scale-95 cursor-pointer truncate"
+            title="Бүх жолооч, машин тохируулах"
           >
-            <Users className="w-4 h-4" />
-            <span>Жолооч & Машин ({drivers.length || appData?.drivers.length || 0})</span>
+            <Users className="w-3.5 h-3.5 text-slate-300 shrink-0" />
+            <span className="truncate">Жолооч & Машин ({drivers.length || appData?.drivers.length || 0})</span>
           </button>
+
+          {onOpenRegulation && (
+            <button
+              onClick={onOpenRegulation}
+              className="h-9 px-2.5 sm:px-3 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-amber-200 text-xs font-black flex items-center gap-1.5 transition-all active:scale-95 cursor-pointer truncate shadow-xs"
+              title="Авто тээвэр, түгээлтийн үйл ажиллагааны журам (Хавсралт №3) нээх"
+            >
+              <BookOpen className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+              <span className="font-mono truncate font-extrabold tracking-wider">//журам//</span>
+            </button>
+          )}
 
           <button
             onClick={onOpenGoogleSheets}
-            className="px-3.5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black flex items-center gap-1.5 transition-all shadow-md border border-emerald-400/40"
-            title="Google Sheets-тэй холбох, шууд шинэ sheet үүсгэх, замын хуудас & телематик экспортлох"
+            className="h-9 px-2.5 sm:px-3 rounded-xl bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700/60 text-slate-200 text-xs font-semibold flex items-center gap-2 transition-all active:scale-95 cursor-pointer truncate"
+            title="Google Sheets холболт & шууд синхрончлол"
           >
-            <FileSpreadsheet className="w-4 h-4 text-emerald-200" />
-            <span>Google Sheets</span>
+            <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+            <span className="truncate">Google Sheets</span>
           </button>
 
           <button
-            onClick={handleExportSheetCsv}
-            className="px-3.5 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 border border-white/20 text-xs font-medium text-white flex items-center gap-1.5 transition-all"
-            title="Бүх 30 машины одоогийн телематик өгөгдлийг Google Sheet форматаар татах"
+            onClick={handleExportWaybillsCsv}
+            className="h-9 px-2.5 sm:px-3 rounded-xl bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700/60 text-slate-200 text-xs font-semibold flex items-center gap-2 transition-all active:scale-95 cursor-pointer truncate"
+            title="Бүх замын хуудсыг CSV форматаар татах"
           >
-            <Download className="w-4 h-4" />
-            <span>CSV</span>
+            <Download className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+            <span className="truncate">CSV татах</span>
           </button>
 
           <button
-            onClick={handleManualSync}
-            disabled={refreshing}
-            className="px-3.5 py-2.5 rounded-xl bg-sky-400 hover:bg-sky-300 text-slate-950 text-xs font-black flex items-center gap-1.5 transition-all shadow-md disabled:opacity-50"
+            onClick={() => setShowDatabaseBackupModal(true)}
+            className="h-9 px-2.5 sm:px-3 rounded-xl bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700/60 text-slate-200 text-xs font-semibold flex items-center gap-2 transition-all active:scale-95 cursor-pointer truncate"
+            title="Өгөгдөл нөөцлөлт & хамгаалалт"
           >
-            <RefreshCw className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`} />
-            <span>GPS Татах</span>
+            <Database className="w-3.5 h-3.5 text-teal-400 shrink-0" />
+            <span className="truncate">Өгөгдөл нөөц</span>
           </button>
+
+          <a
+            href="/sales"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="h-9 px-2.5 sm:px-3 rounded-xl bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700/60 text-slate-200 text-xs font-semibold flex items-center gap-2 transition-all active:scale-95 cursor-pointer truncate"
+            title="Борлуулалтын албаны дашборд руу шилжих (/sales)"
+          >
+            <ExternalLink className="w-3.5 h-3.5 text-purple-300 shrink-0" />
+            <span className="truncate">Борлуулалт (/sales)</span>
+          </a>
         </div>
-      </div>
+      </section>
 
       {/* Metric Cards Row */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
@@ -464,10 +659,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             <Truck className="w-4 h-4 text-[#0878bd]" />
           </div>
           <div className="text-2xl font-black text-[#123047]">
-            {appData?.stats.totalDrivers || drivers.length || 0}
+            {appData?.stats?.totalDrivers || drivers.length || 0}
           </div>
           <span className="text-[11px] text-emerald-600 font-semibold">
-            ● {appData?.stats.activeDrivers || drivers.length || 0} ажиллаж байна
+            ● {appData?.stats?.activeDrivers || drivers.length || 0} ажиллаж байна
           </span>
         </div>
 
@@ -477,7 +672,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             <Clock className="w-4 h-4 text-amber-500" />
           </div>
           <div className="text-2xl font-black text-amber-700">
-            {appData?.stats.todayStartedTrips || 0}
+            {appData?.stats?.todayStartedTrips || 0}
           </div>
           <span className="text-[11px] text-slate-500 font-medium">
             Замд явж байгаа замын хуудас
@@ -490,7 +685,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             <CheckCircle2 className="w-4 h-4 text-emerald-500" />
           </div>
           <div className="text-2xl font-black text-emerald-700">
-            {appData?.stats.todayCompletedTrips || 0}
+            {appData?.stats?.todayCompletedTrips || 0}
           </div>
           <span className="text-[11px] text-emerald-600 font-semibold">
             Баталгаажсан хуудас
@@ -519,53 +714,98 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       </div>
 
       {/* Tabs Bar */}
-      <div className="flex items-center gap-2 border-b border-slate-200 pb-2">
+      <div className="flex items-center gap-2 border-b border-slate-200 pb-2 overflow-x-auto">
         <button
           onClick={() => setActiveTab("fleet")}
-          className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-black transition-all flex items-center gap-2 ${
+          className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-black transition-all flex items-center gap-2 whitespace-nowrap cursor-pointer ${
             activeTab === "fleet"
               ? "bg-[#0878bd] text-white shadow-sm"
               : "text-slate-600 hover:bg-slate-100"
           }`}
         >
           <Truck className="w-4 h-4" />
-          <span>Бүх машин & GPS Шууд хяналт</span>
+          <span>Бүх машин & GPS</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab("daily_assignment")}
+          className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-black transition-all flex items-center gap-2 whitespace-nowrap cursor-pointer ${
+            activeTab === "daily_assignment"
+              ? "bg-[#0878bd] text-white shadow-sm"
+              : "text-slate-600 hover:bg-slate-100"
+          }`}
+        >
+          <Users className="w-4 h-4" />
+          <span>Өдрийн жолоочийн бүртгэл</span>
+          <span className="px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-900 text-[10px] font-black">
+            Өдөр тутмын
+          </span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab("internal_fines")}
+          className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-black transition-all flex items-center gap-2 whitespace-nowrap cursor-pointer ${
+            activeTab === "internal_fines"
+              ? "bg-[#0878bd] text-white shadow-sm"
+              : "text-slate-600 hover:bg-slate-100"
+          }`}
+        >
+          <FileSpreadsheet className="w-4 h-4" />
+          <span>Торгуулийн тайлан (IMT/IMD)</span>
+          <span className="px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-900 text-[10px] font-black">
+            Matrix
+          </span>
         </button>
 
         <button
           onClick={() => setActiveTab("masterlog")}
-          className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-black transition-all flex items-center gap-2 ${
+          className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-black transition-all flex items-center gap-2 whitespace-nowrap cursor-pointer ${
             activeTab === "masterlog"
               ? "bg-[#0878bd] text-white shadow-sm"
               : "text-slate-600 hover:bg-slate-100"
           }`}
         >
           <FileSpreadsheet className="w-4 h-4" />
-          <span>MasterLog Нэгдсэн бүртгэл</span>
+          <span>MasterLog</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab("imd")}
+          className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-black transition-all flex items-center gap-2 whitespace-nowrap cursor-pointer ${
+            activeTab === "imd"
+              ? "bg-[#0878bd] text-white shadow-sm"
+              : "text-slate-600 hover:bg-slate-100"
+          }`}
+        >
+          <Sparkles className="w-4 h-4 text-blue-300" />
+          <span>IMD Удирдлага</span>
+          <span className="px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-900 text-[10px] font-black">
+            Нэгдсэн
+          </span>
         </button>
 
         <button
           onClick={() => setActiveTab("gpsbox")}
-          className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-black transition-all flex items-center gap-2 ${
+          className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-black transition-all flex items-center gap-2 whitespace-nowrap cursor-pointer ${
             activeTab === "gpsbox"
               ? "bg-[#0878bd] text-white shadow-sm"
               : "text-slate-600 hover:bg-slate-100"
           }`}
         >
           <Settings className="w-4 h-4" />
-          <span>GPSBox API Тохиргоо</span>
+          <span>GPSBox API</span>
         </button>
 
         <button
           onClick={() => setActiveTab("fines")}
-          className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-black transition-all flex items-center gap-2 ${
+          className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-black transition-all flex items-center gap-2 whitespace-nowrap cursor-pointer ${
             activeTab === "fines"
               ? "bg-[#0878bd] text-white shadow-sm"
               : "text-slate-600 hover:bg-slate-100"
           }`}
         >
           <ShieldAlert className="w-4 h-4" />
-          <span>Торгууль, зөрчил</span>
+          <span>Замын цагдаа торгууль</span>
           {bulkFines && bulkFines.fineCars > 0 && (
             <span className="px-1.5 py-0.5 rounded-full bg-rose-500 text-white text-[10px] font-black animate-pulse">
               {bulkFines.fineCars}
@@ -748,7 +988,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           {/* Vehicle Cards Grid */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
             {filteredDrivers.map((driver) => {
-              const trip = appData?.tripStatus[driver.id] || appData?.tripStatus[driver.code];
+              const trip = appData?.tripStatus?.[driver.id] || appData?.tripStatus?.[driver.code];
               const isStarted = trip?.phase === "started";
               const isComplete = trip?.phase === "complete";
               const tele = driver.telemetry;
@@ -837,7 +1077,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           <span>GPSBox Шууд Телематик</span>
                         </span>
                         <span className="text-[9px] text-slate-400 font-mono">
-                          {driver.apiLastUpdate || tele?.lastUpdate || "Шууд"}
+                          {tele?.lastUpdate || (driver as any)?.apiLastUpdate || "Шууд"}
                         </span>
                       </div>
 
@@ -1649,12 +1889,102 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           </div>
         </div>
       )}
+      </div>
+
+      {/* TAB: IMD LOGISTICS MASTER MODULE */}
+      {activeTab === "imd" && (
+        <IMDManagerView
+          drivers={appData?.drivers || drivers}
+          onOpenDriverWaybill={(driverId) => {
+            const drv = (appData?.drivers || drivers).find(d => d.id === driverId);
+            if (drv) onOpenDriverWaybill(drv);
+          }}
+          onShowToast={onShowToast}
+        />
+      )}
+
+      {/* TAB: DAILY DRIVER ASSIGNMENT & FINE DETECTION */}
+      {activeTab === "daily_assignment" && (
+        <DailyDriverAssignmentView
+          onShowToast={onShowToast}
+          onOpenReport={() => setActiveTab("internal_fines")}
+        />
+      )}
+
+      {/* TAB: INTERNAL FINES REPORT & MATRIX */}
+      {activeTab === "internal_fines" && (
+        <InternalFineReportView
+          onShowToast={onShowToast}
+          onBackToDaily={() => setActiveTab("daily_assignment")}
+        />
+      )}
 
       {/* 1-Click Batch Waybill Print Modal */}
       {showBatchPrintModal && (
         <BatchWaybillPrintModal
           onClose={() => setShowBatchPrintModal(false)}
           onShowToast={onShowToast}
+        />
+      )}
+
+      {/* Waybill Edit & Retroactive Fill Modal */}
+      {showWaybillEditModal && (
+        <WaybillEditModal
+          isOpen={showWaybillEditModal}
+          onClose={() => setShowWaybillEditModal(false)}
+          drivers={appData?.drivers || drivers}
+          selectedDriverId={editWaybillDriverId}
+          onOpenAutoOdoConfig={(driver) => {
+            setAutoOdoDriverId(driver.id);
+            setShowAutoOdoConfigModal(true);
+          }}
+          onSaved={() => {
+            loadData(false);
+            onRefreshData();
+            onShowToast("Замын хуудасны өөрчлөлт хадгалагдлаа!", "success");
+          }}
+        />
+      )}
+
+      {/* Driver Auto-ODO & API Daily KM Config Modal */}
+      {showAutoOdoConfigModal && (
+        <DriverAutoOdoConfigModal
+          isOpen={showAutoOdoConfigModal}
+          onClose={() => setShowAutoOdoConfigModal(false)}
+          drivers={appData?.drivers || drivers}
+          selectedDriverId={autoOdoDriverId}
+          onSaved={() => {
+            loadData(false);
+            onRefreshData();
+            onShowToast("Авто-ODO тохиргоо шинэчлэгдлээ!", "success");
+          }}
+        />
+      )}
+
+      {/* Official Work Schedule Modal */}
+      {showWorkScheduleModal && (
+        <WorkScheduleModal
+          isOpen={showWorkScheduleModal}
+          onClose={() => setShowWorkScheduleModal(false)}
+          onSuccess={(msg) => {
+            loadData(false);
+            onRefreshData();
+            onShowToast(msg, "success");
+          }}
+        />
+      )}
+
+      {/* Database Backup & Restore Protection Modal */}
+      {showDatabaseBackupModal && (
+        <DatabaseBackupModal
+          isOpen={showDatabaseBackupModal}
+          onClose={() => setShowDatabaseBackupModal(false)}
+          appData={appData}
+          onSuccess={(msg) => {
+            loadData(false);
+            onRefreshData();
+            onShowToast(msg, "success");
+          }}
         />
       )}
 

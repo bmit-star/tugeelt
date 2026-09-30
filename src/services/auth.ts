@@ -76,4 +76,79 @@ export const getAccessToken = async (): Promise<string | null> => {
 export const logoutGoogle = async () => {
   await signOut(auth);
   cachedAccessToken = null;
+  clearStoredSessionToken();
+};
+
+export const SESSION_TOKEN_KEY = "fleet_session_token";
+
+export const getStoredSessionToken = (): string | null => {
+  try {
+    const token = localStorage.getItem(SESSION_TOKEN_KEY);
+    if (!token) return null;
+    const parts = token.split(".");
+    if (parts.length === 3) {
+      try {
+        const payloadStr = atob(parts[1].replace(/-/g, "+").replace(/_/g, "/"));
+        const payload = JSON.parse(payloadStr);
+        if (payload.expiresAt && Date.now() > payload.expiresAt) {
+          clearStoredSessionToken();
+          return null;
+        }
+      } catch (e) {
+        // ignore decoding error
+      }
+    }
+    return token;
+  } catch {
+    return null;
+  }
+};
+
+export const setStoredSessionToken = (token: string): void => {
+  try {
+    localStorage.setItem(SESSION_TOKEN_KEY, token);
+  } catch (e) {
+    console.error("Failed to store session token", e);
+  }
+};
+
+export const clearStoredSessionToken = (): void => {
+  try {
+    localStorage.removeItem(SESSION_TOKEN_KEY);
+    localStorage.removeItem("fleet_manager_authenticated_session_v1");
+  } catch (e) {
+    console.error("Failed to clear session token", e);
+  }
+};
+
+export const driverLogin = async (code: string): Promise<any> => {
+  const res = await fetch("/api/auth/driver-login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code })
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error || "Жолоочийн нэвтрэлт амжилтгүй боллоо");
+  }
+  if (data.token) {
+    setStoredSessionToken(data.token);
+  }
+  return data;
+};
+
+export const managerLogin = async (password: string): Promise<any> => {
+  const res = await fetch("/api/auth/manager-login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password })
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error || "Менежерийн код буруу байна");
+  }
+  if (data.token) {
+    setStoredSessionToken(data.token);
+  }
+  return data;
 };

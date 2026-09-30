@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { Driver } from "../types";
-import { Truck, ShieldCheck, ArrowRight, Lock, AlertTriangle } from "lucide-react";
+import { Truck, ShieldCheck, ArrowRight, Lock, AlertTriangle, Loader2 } from "lucide-react";
+import { driverLogin, managerLogin } from "../services/auth";
 
 const MANAGER_PASSWORD = "88051530";
 const MANAGER_AUTH_KEY = "fleet_manager_authenticated_session_v1";
@@ -34,42 +35,67 @@ export const LoginModal: React.FC<LoginModalProps> = ({
       .trim()
       .toUpperCase()
       .replace(/М/g, "M")
-      .replace(/К/g, "K");
+      .replace(/К/g, "K")
+      .replace(/\s+/g, "");
   };
 
-  const handleDriverSubmit = (e: React.FormEvent) => {
+  const [loading, setLoading] = useState(false);
+
+  const handleDriverSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanCode = normalizeId(driverCode);
     if (!cleanCode) {
-      setDriverError("Бүсийн / Чиглэлийн кодоо оруулна уу!");
+      setDriverError("Та IMT ажилтан бол бүсийн код, IMD ажилтан бол хурууны кодоо оруулна уу");
       return;
     }
 
     const found = drivers.find(
-      (d) => normalizeId(d.id) === cleanCode || normalizeId(d.code) === cleanCode
+      (d) =>
+        normalizeId(d.id) === cleanCode ||
+        normalizeId(d.code) === cleanCode ||
+        normalizeId(d.vehicle) === cleanCode ||
+        normalizeId(d.name).includes(cleanCode)
     );
 
     if (found) {
       setDriverError("");
-      onSelectDriver(found);
+      setLoading(true);
+      try {
+        await driverLogin(found.id || found.code);
+      } catch (err) {
+        console.warn("Backend driver login fallback:", err);
+      } finally {
+        setLoading(false);
+        onSelectDriver(found);
+      }
     } else {
-      setDriverError(`'${driverCode}' гэсэн кодтой жолооч олдсонгүй! (Жишээ нь: M16, KA1, M24 кодоо зөв оруулна уу)`);
+      setDriverError("Та IMT ажилтан бол бүсийн код, IMD ажилтан бол хурууны кодоо оруулна уу");
     }
   };
 
-  const handleManagerSubmit = (e: React.FormEvent) => {
+  const handleManagerSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!managerPassword) {
       setManagerError("Менежерийн нэвтрэх нууц кодыг оруулна уу!");
       return;
     }
 
-    if (managerPassword.trim() === MANAGER_PASSWORD) {
-      setManagerError("");
+    setLoading(true);
+    setManagerError("");
+    try {
+      await managerLogin(managerPassword.trim());
       localStorage.setItem(MANAGER_AUTH_KEY, "true");
       onAdminLogin();
-    } else {
-      setManagerError("Менежерийн нэвтрэх код буруу байна!");
+    } catch (err: any) {
+      // If offline or dev fallback match
+      if (managerPassword.trim() === MANAGER_PASSWORD) {
+        localStorage.setItem(MANAGER_AUTH_KEY, "true");
+        onAdminLogin();
+      } else {
+        setManagerError(err.message || "Менежерийн нэвтрэх код буруу байна!");
+      }
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -85,14 +111,14 @@ export const LoginModal: React.FC<LoginModalProps> = ({
         <h2 className="text-xl font-black text-[#123047] tracking-tight">
           {isManagerView ? "IMT LOGISTICS • Менежерийн хэсэг" : "IMT LOGISTICS • Системд нэвтрэх"}
         </h2>
-        <p className="text-xs font-semibold text-[#0878bd] mt-0.5 mb-1">
+        <p className="text-xs font-semibold text-[#0878bd] mt-0.5 mb-2">
           Transportation & Distribution Management System
         </p>
-        <p className="text-xs text-slate-500 mb-5 leading-relaxed">
-          {isManagerView
-            ? "Менежерийн эрхээр нэвтрэх нууц кодыг оруулна уу"
-            : "Өөрийн бүсийн кодоо (M16, KA1...) оруулан замын хуудас руу нэвтэрнэ"}
-        </p>
+        {isManagerView && (
+          <p className="text-xs text-slate-500 mb-4 leading-relaxed">
+            Менежерийн эрхээр нэвтрэх нууц кодыг оруулна уу
+          </p>
+        )}
 
         {/* DRIVER LOGIN FORM (Only shown in driver mode) */}
         {!isManagerView ? (
@@ -102,7 +128,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
                 <input
                   id="login-driver-code-input"
                   type="text"
-                  placeholder="Бүсийн код (Жишээ: M16)..."
+                  placeholder="КОДОО ОРУУЛНА УУ"
                   value={driverCode}
                   onChange={(e) => {
                     setDriverCode(e.target.value);

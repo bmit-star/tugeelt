@@ -4,5 +4,15 @@ dist/
 coverage/
 .DS_Store
 *.log
+*.bin
+*.tar.gz
+*.zip
+bun.lock
+bun.lockb
+data/backups/
+data/official-letters/
+data/*.backup.json
+data/fleet.sqlite-wal
+data/fleet.sqlite-shm
 .env*
 !.env.example

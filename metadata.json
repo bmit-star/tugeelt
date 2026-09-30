@@ -1,6 +1,6 @@
 {
   "name": "IMT Logistics • Transportation & Distribution Management System",
-  "description": "GPSBox FMS2 системтэй шууд холбогдсон тээврийн хэрэгслийн телематик, жолоочийн замын хуудас болон түгээлтийн нэгдсэн систем",
+  "description": "GPSBox FMS2 системтэй шууд холбогдсон тээврийн хэрэгслийн телематик, замын хуудас болон IMD-ийн дотоод удирдлагын (Томилолт + Захиалга + Жолооч + KM + GPS) нэгдсэн систем",
   "requestFramePermissions": [],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"

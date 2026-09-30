@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0b0f19;
+      --card-bg: #111827;
+      --card-inner: #1a2234;
+      --primary: #6366f1;
+      --primary-hover: #4f46e5;
+      --accent: #06b6d4;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --text: #f9fafb;
+      --text-muted: #9ca3af;
+      --border: #1f293d;
+      --font: 'Plus Jakarta Sans', sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      display: flex;
+      justify-content: center;
+      padding: 40px 20px;
+      min-height: 100vh;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 900px;
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 20px;
+    }
+
+    .brand h1 {
+      font-size: 24px;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      background: linear-gradient(to right, #818cf8, var(--accent));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .brand p {
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+
+    .status-badge {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--card-inner);
+      padding: 6px 14px;
+      border-radius: 20px;
+      border: 1px solid var(--border);
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--success);
+      box-shadow: 0 0 10px var(--success);
+    }
+
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+    }
+
+    .stat-card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      padding: 18px 20px;
+      border-radius: 16px;
+      position: relative;
+    }
+
+    .stat-title {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-muted);
+      font-weight: 700;
+    }
+
+    .stat-value {
+      font-size: 26px;
+      font-weight: 800;
+      font-family: var(--font-mono);
+      margin-top: 6px;
+    }
+
+    .form-card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 24px;
+    }
+
+    .form-card h2 {
+      font-size: 16px;
+      font-weight: 700;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--accent);
+    }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 16px;
+    }
+
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .form-group.full {
+      grid-column: span 2;
+    }
+
+    label {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-muted);
+    }
+
+    select, input {
+      background: var(--card-inner);
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 13px;
+      padding: 10px 14px;
+      border-radius: 10px;
+      outline: none;
+    }
+
+    .btn-submit {
+      background: var(--primary);
+      color: #fff;
+      border: none;
+      font-family: var(--font);
+      font-weight: 700;
+      font-size: 14px;
+      padding: 12px;
+      border-radius: 10px;
+      cursor: pointer;
+      width: 100%;
+      margin-top: 16px;
+    }
+
+    .actions-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+
+    .action-box {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .btn-action {
+      font-family: var(--font);
+      font-weight: 700;
+      font-size: 13px;
+      padding: 12px 18px;
+      border-radius: 10px;
+      border: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      margin-top: 14px;
+    }
+
+    .btn-process { background: var(--card-inner); color: var(--text); border: 1px solid var(--border); }
+    .btn-merge { background: var(--accent); color: #000; }
+
+    .file-manager {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 24px;
+    }
+
+    .file-list {
+      max-height: 250px;
+      overflow-y: auto;
+      margin-top: 14px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--card-inner);
+    }
+
+    .file-item {
+      display: flex;
+      align-items: center;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      font-size: 13px;
+    }
+
+    .file-info {
+      flex: 1;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--accent);
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="brand">
+        <h1>IMD Админы самбар</h1>
+        <p>Автоматжуулалт болон Спредшитийн шууд удирдах систем</p>
+      </div>
+      <div class="status-badge">
+        <div class="status-dot"></div>
+        <span>LIVE AGENT ACTIVE</span>
+      </div>
+    </header>
+
+    <section class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-title">Муж дахь нийт мөр (10-89)</div>
+        <div class="stat-value" id="stat-total">80</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-title">Бэлэн болсон (DONE)</div>
+        <div class="stat-value" id="stat-done" style="color: var(--success);">--</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-title">Боловсруулаагүй</div>
+        <div class="stat-value" id="stat-pending" style="color: var(--warning);">--</div>
+      </div>
+    </section>
+
+    <!-- NEW ORDER ENTRY -->
+    <section class="form-card">
+      <h2>Шинэ захиалга бүртгэх</h2>
+      <form id="orderForm">
+        <div class="form-grid">
+          <div class="form-group">
+            <label>Түгээгч 1 (Багана C)</label>
+            <select id="tug1" required></select>
+          </div>
+          <div class="form-group">
+            <label>Түгээгч 2 (Багана D)</label>
+            <select id="tug2"></select>
+          </div>
+          <div class="form-group full">
+            <label>Томилолт чиглэл (Багана E)</label>
+            <select id="chiglel" required></select>
+          </div>
+          <div class="form-group">
+            <label>Захиалгын хэмжээ (Багана H)</label>
+            <input type="number" step="any" id="size" placeholder="Жишээ: 4.5" required>
+          </div>
+          <div class="form-group">
+            <label>Захиалга ирсэн огноо (Багана I)</label>
+            <input type="date" id="ognooIrsen" required>
+          </div>
+          <div class="form-group full">
+            <label>Тээвэрт гарсан огноо (Багана J)</label>
+            <input type="date" id="ognooGarsan" required>
+          </div>
+        </div>
+        <button type="submit" class="btn-submit" id="btnSaveOrder">Шинэ захиалга хадгалах</button>
+      </form>
+    </section>
+
+    <!-- ACTIONS -->
+    <section class="actions-grid">
+      <div class="action-box">
+        <div>
+          <h3>Дарааллыг Шууд Боловсруулах</h3>
+          <p>Спредшит дээр ирсэн шинэ өгөгдлийг шалгаж, DONE бичигдээгүй байгаа бүх мөрийг бэлэн Google Docs загвараар нэг бүрчлэн уншиж PDF болгон хөрвүүлнэ.</p>
+        </div>
+        <button class="btn-action btn-process" id="btnRunBatch">Үлдсэн албан бичгийг боловсруулах</button>
+      </div>
+      <div class="action-box">
+        <div>
+          <h3>Сонгосон файлуудыг нэгтгэж татах</h3>
+          <p>Доорх жагсаалтаас чеклэж сонгосон албан бичгүүдийг локал хөтөч дээрээ секундын дотор нэгтгэж, нэг PDF файл болгон шууд татна.</p>
+        </div>
+        <button class="btn-action btn-merge" id="btnMergeSelected">Сонгосон файлуудыг нэгтгэж хэвлэх</button>
+      </div>
+    </section>
+
+    <!-- FILE REPOSITORY -->
+    <section class="file-manager">
+      <h3>Файлын сан (Удирдлагын хэсэг)</h3>
+      <div class="file-list" id="fileListContainer"></div>
+    </section>
+  </div>
+</body>
+</html>

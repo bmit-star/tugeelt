@@ -3,6 +3,7 @@
   "appId": "1:808767991629:web:c594c6fa229db4b60b9104",
   "apiKey": "AIzaSyCMKZfvzTq_VuD5WCY6EsEhZcyoy7nVrKo",
   "authDomain": "telegrambot-453906.firebaseapp.com",
+  "firestoreDatabaseId": "ai-studio-fleetdigitalgpsb-87443a48-cef3-47f4-843c-691916eb6fdc",
   "storageBucket": "telegrambot-453906.firebasestorage.app",
   "messagingSenderId": "808767991629",
   "measurementId": "",

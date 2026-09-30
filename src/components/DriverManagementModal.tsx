@@ -13,8 +13,11 @@ import {
   RefreshCw, 
   Search,
   MapPin,
-  Briefcase
+  Briefcase,
+  Building2,
+  Box
 } from "lucide-react";
+import { getVehicleBoxCapacity, IMD_VEHICLE_BOX_CAPACITIES } from "../constants/imdConstants";
 
 interface DriverManagementModalProps {
   drivers: Driver[];
@@ -41,9 +44,17 @@ export const DriverManagementModal: React.FC<DriverManagementModalProps> = ({
   const [formName, setFormName] = useState(initialDriver ? initialDriver.name : "");
   const [formPhone, setFormPhone] = useState(initialDriver ? initialDriver.phone : "");
   const [formVehicle, setFormVehicle] = useState(initialDriver ? initialDriver.vehicle : "");
+  const [formBoxCapacity, setFormBoxCapacity] = useState<number>(
+    initialDriver?.boxCapacity || 
+    (initialDriver?.vehicle ? getVehicleBoxCapacity(initialDriver.vehicle, drivers) : 700)
+  );
   const [formModel, setFormModel] = useState(initialDriver ? initialDriver.model : "Isuzu NPR 75");
   const [formSalesRep, setFormSalesRep] = useState(initialDriver ? initialDriver.salesRep : "До.Дэмбэрэл");
   const [formDefaultRoute, setFormDefaultRoute] = useState(initialDriver ? initialDriver.defaultRoute || "" : "");
+  const [formOrganization, setFormOrganization] = useState(
+    initialDriver?.organization || 
+    (initialDriver?.isIMD ? "Айсмарк Дистрибьюшн ХХК" : "АЙСМАРК ТРЕЙД ХХК")
+  );
   const [formStatus, setFormStatus] = useState<"active" | "inactive">(initialDriver ? initialDriver.status : "active");
 
   const [loading, setLoading] = useState(false);
@@ -63,9 +74,14 @@ export const DriverManagementModal: React.FC<DriverManagementModalProps> = ({
     setFormName(driver.name);
     setFormPhone(driver.phone || "");
     setFormVehicle(driver.vehicle || "");
+    setFormBoxCapacity(driver.boxCapacity || getVehicleBoxCapacity(driver.vehicle, drivers));
     setFormModel(driver.model || "Isuzu");
     setFormSalesRep(driver.salesRep || "До.Дэмбэрэл");
     setFormDefaultRoute(driver.defaultRoute || "");
+    setFormOrganization(
+      driver.organization || 
+      (driver.isIMD ? "Айсмарк Дистрибьюшн ХХК" : "АЙСМАРК ТРЕЙД ХХК")
+    );
     setFormStatus(driver.status || "active");
   };
 
@@ -76,10 +92,21 @@ export const DriverManagementModal: React.FC<DriverManagementModalProps> = ({
     setFormName("");
     setFormPhone("");
     setFormVehicle("");
+    setFormBoxCapacity(700);
     setFormModel("Isuzu NPR 75");
     setFormSalesRep("До.Дэмбэрэл");
     setFormDefaultRoute("");
+    setFormOrganization("Айсмарк Дистрибьюшн ХХК");
     setFormStatus("active");
+  };
+
+  const handleVehicleChange = (newVeh: string) => {
+    const upper = newVeh.toUpperCase();
+    setFormVehicle(upper);
+    const matchedCap = getVehicleBoxCapacity(upper, drivers);
+    if (matchedCap && matchedCap !== 700) {
+      setFormBoxCapacity(matchedCap);
+    }
   };
 
   const handleSave = async (e: React.FormEvent) => {
@@ -92,16 +119,20 @@ export const DriverManagementModal: React.FC<DriverManagementModalProps> = ({
     setLoading(true);
     try {
       const cleanCode = formCode.trim().toUpperCase();
+      const capNum = Number(formBoxCapacity) > 0 ? Number(formBoxCapacity) : 700;
       const payload = {
         id: selectedDriver ? selectedDriver.id : cleanCode,
         code: cleanCode,
         name: formName.trim(),
         phone: formPhone.trim(),
         vehicle: formVehicle.trim().toUpperCase() || "----",
+        boxCapacity: capNum,
         model: formModel.trim(),
         salesRep: formSalesRep.trim(),
         defaultRoute: formDefaultRoute.trim(),
+        organization: formOrganization.trim() || "АЙСМАРК ТРЕЙД ХХК",
         status: formStatus,
+        isIMD: formOrganization.includes("Дистрибьюшн") || selectedDriver?.isIMD,
         isNew: isCreatingNew
       };
 
@@ -233,10 +264,23 @@ export const DriverManagementModal: React.FC<DriverManagementModalProps> = ({
                           {d.name}
                         </span>
                       </div>
-                      <div className="text-[10px] text-slate-500 mt-1 flex items-center gap-1.5">
+                      <div className="text-[10px] text-slate-500 mt-1 flex items-center gap-1.5 flex-wrap">
                         <span className="font-bold text-[#0878bd] font-mono">{d.vehicle || "Машингүй"}</span>
                         <span>•</span>
+                        <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 font-bold text-[9px] border border-blue-200/60 font-mono">
+                          <Box className="w-2.5 h-2.5 text-blue-500" />
+                          {(d.boxCapacity || getVehicleBoxCapacity(d.vehicle, drivers)).toLocaleString()} хайрцаг
+                        </span>
+                        <span>•</span>
                         <span className="truncate">{d.salesRep || "Төлөөлөгчгүй"}</span>
+                        {d.organization && (
+                          <>
+                            <span>•</span>
+                            <span className="text-[9px] px-1 py-0.2 rounded bg-amber-50 text-amber-800 border border-amber-200 truncate max-w-[120px]">
+                              {d.organization.replace(" ХХК", "")}
+                            </span>
+                          </>
+                        )}
                       </div>
                     </div>
 
@@ -346,11 +390,53 @@ export const DriverManagementModal: React.FC<DriverManagementModalProps> = ({
                     </label>
                     <input
                       type="text"
-                      placeholder="Жишээ: 2611 УЕВ"
+                      placeholder="Жишээ: 8374 УНЕ"
                       value={formVehicle}
-                      onChange={(e) => setFormVehicle(e.target.value.toUpperCase())}
+                      onChange={(e) => handleVehicleChange(e.target.value)}
                       className="w-full h-10 px-3 rounded-xl border border-slate-300 bg-white text-slate-900 text-xs font-bold focus:outline-none focus:ring-2 focus:ring-[#0878bd] uppercase font-mono"
                     />
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-600 flex items-center gap-1">
+                        <Box className="w-3.5 h-3.5 text-[#0878bd]" />
+                        <span>Зайрмаг ачих багтаамж (хайрцаг)</span>
+                      </label>
+                      {formBoxCapacity > 0 && (
+                        <span className="text-[10px] font-mono font-black text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">
+                          {formBoxCapacity.toLocaleString()} хайрцаг
+                        </span>
+                      )}
+                    </div>
+                    <div className="space-y-1.5">
+                      <input
+                        type="number"
+                        min={0}
+                        step={10}
+                        placeholder="Жишээ: 700, 1000, 1500"
+                        value={formBoxCapacity || ""}
+                        onChange={(e) => setFormBoxCapacity(Number(e.target.value))}
+                        className="w-full h-10 px-3 rounded-xl border border-slate-300 bg-white text-slate-900 text-xs font-bold focus:outline-none focus:ring-2 focus:ring-[#0878bd] font-mono"
+                      />
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] text-slate-400 font-medium">Сонголт:</span>
+                        {[700, 1000, 1500].map((cap) => (
+                          <button
+                            key={cap}
+                            type="button"
+                            onClick={() => setFormBoxCapacity(cap)}
+                            className={`px-2 py-0.5 rounded-md text-[10px] font-bold font-mono transition-colors ${
+                              formBoxCapacity === cap 
+                                ? "bg-[#0878bd] text-white shadow-xs" 
+                                : "bg-slate-100 hover:bg-slate-200 text-slate-700"
+                            }`}
+                          >
+                            {cap} хайрцаг
+                          </button>
+                        ))}
+                      </div>
+                    </div>
                   </div>
 
                   <div>
@@ -377,6 +463,41 @@ export const DriverManagementModal: React.FC<DriverManagementModalProps> = ({
                       onChange={(e) => setFormSalesRep(e.target.value)}
                       className="w-full h-10 px-3 rounded-xl border border-slate-300 bg-white text-slate-900 text-xs font-medium focus:outline-none focus:ring-2 focus:ring-[#0878bd]"
                     />
+                  </div>
+
+                  <div className="sm:col-span-2">
+                    <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-600 mb-1 flex items-center justify-between">
+                      <span className="flex items-center gap-1">
+                        <Building2 className="w-3.5 h-3.5 text-[#0878bd]" />
+                        Байгууллагын нэр (Замын хуудас дээр гарах)
+                      </span>
+                      <span className="text-[10px] text-slate-400 font-normal">Сонгох эсвэл шууд бичих</span>
+                    </label>
+                    <div className="space-y-1.5">
+                      <select
+                        value={["Айсмарк Дистрибьюшн ХХК", "АЙСМАРК ТРЕЙД ХХК", "АЙСМАРК ХХК"].includes(formOrganization) ? formOrganization : "custom"}
+                        onChange={(e) => {
+                          if (e.target.value !== "custom") {
+                            setFormOrganization(e.target.value);
+                          }
+                        }}
+                        className="w-full h-10 px-3 rounded-xl border border-slate-300 bg-white text-slate-900 text-xs font-bold focus:outline-none focus:ring-2 focus:ring-[#0878bd]"
+                      >
+                        <option value="Айсмарк Дистрибьюшн ХХК">Айсмарк Дистрибьюшн ХХК (Түгээлт / Орон нутаг)</option>
+                        <option value="АЙСМАРК ТРЕЙД ХХК">АЙСМАРК ТРЕЙД ХХК (Хот доторх түгээлт)</option>
+                        <option value="АЙСМАРК ХХК">АЙСМАРК ХХК</option>
+                        <option value="custom">-- Өөр байгууллагын нэр гараар оруулах --</option>
+                      </select>
+                      {(!["Айсмарк Дистрибьюшн ХХК", "АЙСМАРК ТРЕЙД ХХК", "АЙСМАРК ХХК"].includes(formOrganization)) && (
+                        <input
+                          type="text"
+                          placeholder="Байгууллагын нэр гараар оруулах..."
+                          value={formOrganization}
+                          onChange={(e) => setFormOrganization(e.target.value)}
+                          className="w-full h-10 px-3 rounded-xl border border-amber-300 bg-amber-50/50 text-slate-900 text-xs font-bold focus:outline-none focus:ring-2 focus:ring-[#0878bd]"
+                        />
+                      )}
+                    </div>
                   </div>
 
                   <div className="sm:col-span-2">
