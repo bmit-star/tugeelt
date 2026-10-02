@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { API } from "../services/api";
-import * as XLSX from "xlsx";
 import {
   Calendar,
   Filter,
@@ -16,7 +15,8 @@ import {
   ChevronRight,
   ShieldCheck,
   Search,
-  DollarSign
+  DollarSign,
+  X
 } from "lucide-react";
 
 interface Props {
@@ -88,13 +88,15 @@ export const MonthlyExceptionReportView: React.FC<Props> = ({
   // Filter current active list by search query
   const filteredList = useMemo(() => {
     let list: any[] = [];
-    if (activeTab === "vehicle_swaps") list = reportData.vehicleSwaps;
-    else if (activeTab === "driver_swaps") list = reportData.driverSwaps;
-    else list = reportData.nonDepartures;
+    if (activeTab === "vehicle_swaps") list = reportData.vehicleSwaps || [];
+    else if (activeTab === "driver_swaps") list = reportData.driverSwaps || [];
+    else list = reportData.nonDepartures || [];
 
+    if (!Array.isArray(list)) return [];
     if (!searchQuery.trim()) return list;
     const q = searchQuery.toLowerCase().trim();
     return list.filter(item => {
+      if (!item) return false;
       const matchRoute = (item.routeName || "").toLowerCase().includes(q) || (item.routeId || "").toLowerCase().includes(q);
       const matchPlate = (item.vehiclePlate || "").toLowerCase().includes(q) || (item.originalVehiclePlate || "").toLowerCase().includes(q) || (item.actualVehiclePlate || "").toLowerCase().includes(q);
       const matchDriver = (item.originalDriverName || "").toLowerCase().includes(q) || (item.actualDriverName || "").toLowerCase().includes(q);
@@ -104,38 +106,39 @@ export const MonthlyExceptionReportView: React.FC<Props> = ({
     });
   }, [activeTab, reportData, searchQuery]);
 
-  // Export to Excel
-  const handleExportExcel = () => {
+  // Export to Excel (dynamically loads XLSX on demand)
+  const handleExportExcel = async () => {
     try {
+      const XLSX = await import("xlsx");
       const wb = XLSX.utils.book_new();
 
       // Sheet 1: Vehicle Swaps (Машин сольсон тайлан)
-      const vData = reportData.vehicleSwaps.map((row, idx) => ({
+      const vData = (reportData.vehicleSwaps || []).map((row, idx) => ({
         "Д/д": idx + 1,
-        "Огноо": row.businessDate,
-        "Харьяалал": row.vehicleDivision,
-        "Чиглэл": row.routeId,
-        "Бүсчлэл": row.routeName,
-        "Үндсэн тэрэг": row.originalVehiclePlate,
-        "Солигдсон тэрэг": row.actualVehiclePlate || row.vehiclePlate,
+        "Огноо": row.businessDate || "-",
+        "Харьяалал": row.vehicleDivision || "IMT",
+        "Чиглэл": row.routeId || "-",
+        "Бүсчлэл": row.routeName || "-",
+        "Үндсэн тэрэг": row.originalVehiclePlate || "-",
+        "Солигдсон тэрэг": row.actualVehiclePlate || row.vehiclePlate || "-",
         "Машины төлөв": row.vehicleStatus || "Засвартай",
         "Шалтгаан": row.vehicleReason || "",
-        "Жолооч": row.actualDriverName || row.originalDriverName,
+        "Жолооч": row.actualDriverName || row.originalDriverName || "-",
         "Борлуулагч": row.salesRep || ""
       }));
       const wsV = XLSX.utils.json_to_sheet(vData);
       XLSX.utils.book_append_sheet(wb, wsV, "Машин_Сольсон");
 
       // Sheet 2: Driver Swaps (Жолооч сольсон тайлан)
-      const dData = reportData.driverSwaps.map((row, idx) => ({
+      const dData = (reportData.driverSwaps || []).map((row, idx) => ({
         "Д/д": idx + 1,
-        "Огноо": row.businessDate,
-        "Харьяалал": row.vehicleDivision,
-        "Чиглэл": row.routeId,
-        "Бүсчлэл": row.routeName,
-        "Машин": row.vehiclePlate,
-        "Үндсэн жолооч": row.originalDriverName,
-        "Явсан жолооч": row.actualDriverName,
+        "Огноо": row.businessDate || "-",
+        "Харьяалал": row.vehicleDivision || "IMT",
+        "Чиглэл": row.routeId || "-",
+        "Бүсчлэл": row.routeName || "-",
+        "Машин": row.vehiclePlate || "-",
+        "Үндсэн жолооч": row.originalDriverName || "-",
+        "Явсан жолооч": row.actualDriverName || "-",
         "Жолоочийн төлөв": row.driverStatus || "Солигдсон",
         "Шалтгаан": row.driverReason || "",
         "Торгууль (₮)": 10000,
@@ -145,15 +148,15 @@ export const MonthlyExceptionReportView: React.FC<Props> = ({
       XLSX.utils.book_append_sheet(wb, wsD, "Жолооч_Сольсон");
 
       // Sheet 3: Non-departures (Бүс гараагүй тайлан)
-      const nData = reportData.nonDepartures.map((row, idx) => ({
+      const nData = (reportData.nonDepartures || []).map((row, idx) => ({
         "Д/д": idx + 1,
-        "Огноо": row.businessDate,
-        "Харьяалал": row.vehicleDivision,
-        "Чиглэл": row.routeId,
-        "Бүсчлэл": row.routeName,
-        "Машин": row.vehiclePlate,
-        "Жолооч": row.originalDriverName,
-        "Чиглэлийн төлөв": row.routeStatus,
+        "Огноо": row.businessDate || "-",
+        "Харьяалал": row.vehicleDivision || "IMT",
+        "Чиглэл": row.routeId || "-",
+        "Бүсчлэл": row.routeName || "-",
+        "Машин": row.vehiclePlate || "-",
+        "Жолооч": row.originalDriverName || "-",
+        "Чиглэлийн төлөв": row.routeStatus || "Гараагүй",
         "Машины шалтгаан": row.vehicleReason || "",
         "Жолоочийн шалтгаан": row.driverReason || "",
         "Борлуулагч": row.salesRep || ""
@@ -262,6 +265,16 @@ export const MonthlyExceptionReportView: React.FC<Props> = ({
             >
               <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
             </button>
+
+            {onClose && (
+              <button
+                onClick={onClose}
+                className="p-2.5 rounded-xl border border-slate-200 text-slate-500 hover:bg-slate-100 hover:text-slate-800 transition-colors cursor-pointer"
+                title="Хаах"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
           </div>
         </div>
 
@@ -617,3 +630,5 @@ export const MonthlyExceptionReportView: React.FC<Props> = ({
     </div>
   );
 };
+
+export default MonthlyExceptionReportView;
