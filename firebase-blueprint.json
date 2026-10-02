@@ -1,0 +1,79 @@
+{
+  "entities": {
+    "SystemConfig": {
+      "title": "SystemConfig",
+      "description": "System-wide settings and configurations",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      }
+    },
+    "Driver": {
+      "title": "Driver",
+      "description": "Driver profile and vehicle assignment",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "code": { "type": "string" },
+        "vehicle": { "type": "string" }
+      }
+    },
+    "Assignment": {
+      "title": "Assignment",
+      "description": "Official IMD assignment record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "orderNo": { "type": "string" },
+        "vehiclePlate": { "type": "string" },
+        "primaryDriverId": { "type": "string" },
+        "departureDate": { "type": "string" }
+      }
+    },
+    "Order": {
+      "title": "Order",
+      "description": "IMD destination distribution order",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "orderNo": { "type": "string" },
+        "province": { "type": "string" },
+        "destination": { "type": "string" }
+      }
+    },
+    "Trip": {
+      "title": "Trip",
+      "description": "Daily waybill trip record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "date": { "type": "string" },
+        "vehicleNumber": { "type": "string" }
+      }
+    }
+  },
+  "firestore": {
+    "/system/{configId}": {
+      "schema": "SystemConfig",
+      "description": "System configurations"
+    },
+    "/drivers/{driverId}": {
+      "schema": "Driver",
+      "description": "Driver master settings"
+    },
+    "/assignments/{assignmentId}": {
+      "schema": "Assignment",
+      "description": "IMD assignments"
+    },
+    "/orders/{orderId}": {
+      "schema": "Order",
+      "description": "IMD orders"
+    },
+    "/trips/{tripId}": {
+      "schema": "Trip",
+      "description": "Waybill trips"
+    }
+  }
+}

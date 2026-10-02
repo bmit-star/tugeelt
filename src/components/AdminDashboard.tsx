@@ -1143,7 +1143,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                             <span>GPSBox ODO:</span>
                           </span>
                           <span className="font-mono font-black text-slate-800">
-                            {driver.apiOdo ? `${driver.apiOdo.toLocaleString()} км` : "—"}
+                            {driver.apiOdo ? `${Math.round(driver.apiOdo).toLocaleString()} км` : "—"}
                           </span>
                         </div>
 
@@ -1261,10 +1261,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       <td className="p-3 font-mono font-bold text-slate-800">{t.vehicleNumber}</td>
                       <td className="p-3 text-slate-700">{t.salesRep}</td>
                       <td className="p-3 text-slate-600 truncate max-w-xs">{t.zone}</td>
-                      <td className="p-3 text-right font-mono">{t.startOdo?.toLocaleString()}</td>
-                      <td className="p-3 text-right font-mono">{t.endOdo ? t.endOdo.toLocaleString() : "—"}</td>
+                      <td className="p-3 text-right font-mono">{t.startOdo !== undefined && t.startOdo !== null ? Math.round(Number(t.startOdo)).toLocaleString() : "—"}</td>
+                      <td className="p-3 text-right font-mono">{t.endOdo !== undefined && t.endOdo !== null ? Math.round(Number(t.endOdo)).toLocaleString() : "—"}</td>
                       <td className="p-3 text-right font-mono font-black text-emerald-700 bg-emerald-50/40">
-                        {t.totalKm ? `${t.totalKm.toLocaleString()} км` : "—"}
+                        {t.totalKm !== undefined && t.totalKm !== null ? `${Math.round(Number(t.totalKm)).toLocaleString()} км` : "—"}
                       </td>
                       <td className="p-3 text-right font-mono">
                         {t.fuelLiters ? `${t.fuelLiters} л` : "—"}
@@ -1520,7 +1520,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                             )}
                           </td>
                           <td className="p-3 text-right font-mono font-bold text-slate-800">
-                            {item.odometer?.toLocaleString()} км
+                            {item.odometer ? `${Math.round(item.odometer).toLocaleString()} км` : "—"}
                           </td>
                           <td className="p-3 text-right">
                             <span className="font-black text-amber-600 font-mono block">

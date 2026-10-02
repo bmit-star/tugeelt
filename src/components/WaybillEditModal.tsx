@@ -111,9 +111,9 @@ export const WaybillEditModal: React.FC<WaybillEditModalProps> = ({
           date: d.date,
           zone: d.zone || currentDriver.defaultRoute || "",
           task: d.task || (d.startOdo ? "Борлуулалт" : (d.status === "REST_DAY" ? "Хуваарьт амралт" : "Борлуулалт")),
-          startOdo: d.startOdo,
-          endOdo: d.endOdo,
-          totalKm: d.totalKm,
+          startOdo: d.startOdo !== "" && !isNaN(Number(d.startOdo)) ? Math.round(Number(d.startOdo)) : (d.startOdo || ""),
+          endOdo: d.endOdo !== "" && !isNaN(Number(d.endOdo)) ? Math.round(Number(d.endOdo)) : (d.endOdo || ""),
+          totalKm: d.totalKm !== "" && !isNaN(Number(d.totalKm)) ? Math.round(Number(d.totalKm)) : (d.totalKm || ""),
           fuelLiters: d.fuelLiters,
           salesRep: d.salesRep || currentDriver.salesRep || "",
           status: dayStatus,
@@ -161,30 +161,36 @@ export const WaybillEditModal: React.FC<WaybillEditModalProps> = ({
       // For IMT: End Odo (23:59) - Start Odo (06:00) = Total KM
       if (isIMT) {
         if (field === "startOdo" || field === "endOdo") {
-          const start = Number(field === "startOdo" ? value : row.startOdo);
-          const end = Number(field === "endOdo" ? value : row.endOdo);
+          const start = Math.round(Number(field === "startOdo" ? value : row.startOdo));
+          const end = Math.round(Number(field === "endOdo" ? value : row.endOdo));
           if (!isNaN(start) && !isNaN(end) && end >= start) {
+            row.startOdo = start;
+            row.endOdo = end;
             row.totalKm = end - start;
           }
         } else if (field === "totalKm") {
-          const start = Number(row.startOdo);
-          const km = Number(value);
+          const start = Math.round(Number(row.startOdo));
+          const km = Math.round(Number(value));
           if (!isNaN(start) && !isNaN(km) && km >= 0) {
+            row.totalKm = km;
             row.endOdo = start + km;
           }
         }
       } else {
         // If user changed totalKm or startOdo, re-compute endOdo
         if (field === "startOdo" || field === "totalKm") {
-          const start = Number(field === "startOdo" ? value : row.startOdo);
-          const km = Number(field === "totalKm" ? value : row.totalKm);
+          const start = Math.round(Number(field === "startOdo" ? value : row.startOdo));
+          const km = Math.round(Number(field === "totalKm" ? value : row.totalKm));
           if (!isNaN(start) && !isNaN(km) && km >= 0) {
+            row.startOdo = start;
+            row.totalKm = km;
             row.endOdo = start + km;
           }
         } else if (field === "endOdo") {
-          const start = Number(row.startOdo);
-          const end = Number(value);
+          const start = Math.round(Number(row.startOdo));
+          const end = Math.round(Number(value));
           if (!isNaN(start) && !isNaN(end) && end >= start) {
+            row.endOdo = end;
             row.totalKm = end - start;
           }
         }
@@ -194,11 +200,11 @@ export const WaybillEditModal: React.FC<WaybillEditModalProps> = ({
 
       // Cascading update to subsequent active days if endOdo changed
       if (field === "endOdo" || field === "totalKm" || field === "startOdo") {
-        let currentRunning = Number(row.endOdo);
+        let currentRunning = Math.round(Number(row.endOdo));
         if (!isNaN(currentRunning) && currentRunning > 0) {
           for (let j = index + 1; j < updated.length; j++) {
             if (updated[j].isFuture) break;
-            const nextKm = Number(updated[j].totalKm) || 0;
+            const nextKm = Math.round(Number(updated[j].totalKm) || 0);
             updated[j] = {
               ...updated[j],
               startOdo: currentRunning,

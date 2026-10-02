@@ -228,7 +228,7 @@ export function syncGpsboxTripsAndOdometer(dbState: any, customEndDate?: string)
         entry = liveCache[date][cleanPlate];
       }
 
-      const km = entry ? Math.round(Number(entry.km || 0) * 100) / 100 : 0;
+      const km = entry ? Math.round(Number(entry.km || 0)) : 0;
       const fuel = entry ? Math.round(Number(entry.fuel || 0) * 100) / 100 : 0;
 
       let status = "CALCULATED";
@@ -242,8 +242,8 @@ export function syncGpsboxTripsAndOdometer(dbState: any, customEndDate?: string)
         odoCalcStatus = "no_data";
       }
 
-      const dayStartOdo = runningOdo !== null ? Math.round(runningOdo * 100) / 100 : 0;
-      const dayEndOdo = runningOdo !== null ? Math.round((dayStartOdo + km) * 100) / 100 : 0;
+      const dayStartOdo = runningOdo !== null ? Math.round(runningOdo) : 0;
+      const dayEndOdo = runningOdo !== null ? Math.round(dayStartOdo + km) : 0;
 
       // Anomaly detection: Closing < Opening or negative daily KM (Section 29, 36)
       if (dayEndOdo < dayStartOdo || km < 0) {

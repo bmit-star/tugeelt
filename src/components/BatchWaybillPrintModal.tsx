@@ -152,7 +152,7 @@ export const BatchWaybillPrintModal: React.FC<BatchWaybillPrintModalProps> = ({
     let totalFuelSum = 0;
 
     sheet.days.forEach(d => {
-      const kmVal = typeof d.totalKm === "number" ? d.totalKm : (parseFloat(String(d.totalKm || "0")) || 0);
+      const kmVal = typeof d.totalKm === "number" ? Math.round(d.totalKm) : (Math.round(parseFloat(String(d.totalKm || "0"))) || 0);
       const fuelVal = typeof d.fuelLiters === "number" ? d.fuelLiters : (parseFloat(String(d.fuelLiters || "0")) || 0);
       totalKmSum += kmVal;
       totalFuelSum += fuelVal;
@@ -163,9 +163,9 @@ export const BatchWaybillPrintModal: React.FC<BatchWaybillPrintModalProps> = ({
         d.salesRep || initialSalesRep,
         d.zone || "",
         d.task || "",
-        d.startOdo || "",
-        d.endOdo || "",
-        kmVal > 0 ? kmVal : (d.totalKm || ""),
+        d.startOdo !== "" && !isNaN(Number(d.startOdo)) ? Math.round(Number(d.startOdo)) : (d.startOdo || ""),
+        d.endOdo !== "" && !isNaN(Number(d.endOdo)) ? Math.round(Number(d.endOdo)) : (d.endOdo || ""),
+        kmVal > 0 ? kmVal : (d.totalKm !== "" && !isNaN(Number(d.totalKm)) ? Math.round(Number(d.totalKm)) : (d.totalKm || "")),
         fuelVal > 0 ? fuelVal : (d.fuelLiters || ""),
         d.driverSignature || "",
         d.verifierSignature || ""
@@ -321,9 +321,9 @@ export const BatchWaybillPrintModal: React.FC<BatchWaybillPrintModalProps> = ({
           d.date,
           `"${(d.zone || "").replace(/"/g, '""')}"`,
           `"${(d.task || "").replace(/"/g, '""')}"`,
-          d.startOdo || "",
-          d.endOdo || "",
-          d.totalKm || "",
+          d.startOdo !== "" && !isNaN(Number(d.startOdo)) ? Math.round(Number(d.startOdo)) : (d.startOdo || ""),
+          d.endOdo !== "" && !isNaN(Number(d.endOdo)) ? Math.round(Number(d.endOdo)) : (d.endOdo || ""),
+          d.totalKm !== "" && !isNaN(Number(d.totalKm)) ? Math.round(Number(d.totalKm)) : (d.totalKm || ""),
           d.fuelLiters || "",
           `"${d.driverSignature || ""}"`,
           `"${d.verifierSignature || ""}"`

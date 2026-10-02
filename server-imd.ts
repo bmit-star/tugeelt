@@ -3,6 +3,13 @@ import crypto from "crypto";
 import { setupOfficialLettersModule, ensureLetterRecordAndFile } from "./server-official-letters";
 import { restore40Assignments } from "./server/modules/imd/restore-assignments";
 import { getDatabase } from "./server/database/client";
+import {
+  saveAssignmentToFirestore,
+  deleteAssignmentFromFirestore,
+  saveOrderToFirestore,
+  deleteOrderFromFirestore,
+  saveDriverToFirestore
+} from "./server/services/firestore-persistence";
 
 export interface IMDOrder {
   id: string;
@@ -432,6 +439,7 @@ export function setupIMDModule(
       };
 
       // If driver and vehicle are provided, automatically generate the Assignment
+      let newAsn: IMDAssignment | null = null;
       if (body.vehiclePlate && (body.primaryDriverId || body.primaryDriverName)) {
         const asnId = "ASN-" + Date.now().toString().slice(-6);
         const token = "tok_drv_" + crypto.randomBytes(6).toString("hex");
@@ -443,7 +451,7 @@ export function setupIMDModule(
         const mealPerPerson = mealCount * 25000;
         const mealAllowance = Number(body.mealAllowance) || (mealPerPerson * driverCount);
 
-        const newAsn: IMDAssignment = {
+        newAsn = {
           id: asnId,
           orderId: newOrder.id,
           orderNo: newOrder.orderNo,
@@ -477,7 +485,7 @@ export function setupIMDModule(
 
         // Also ensure trip is logged for the driver's waybill view
         const tripDate = newAsn.departureDate;
-        if (!db.trips.some((t: any) => t.vehicleNumber === newAsn.vehiclePlate && t.date === tripDate)) {
+        if (!db.trips.some((t: any) => t.vehicleNumber === newAsn!.vehiclePlate && t.date === tripDate)) {
           db.trips.push({
             id: "trip_" + asnId.toLowerCase(),
             timestamp: new Date().toISOString(),
@@ -499,6 +507,8 @@ export function setupIMDModule(
       db.orders.unshift(newOrder);
       logAudit(req.body.user || "Менежер", "ORDER_CREATED", `Шинэ захиалга бүртгэв: ${newOrder.orderNo} (${newOrder.province})`, null, newOrder);
       saveDB(db);
+      saveOrderToFirestore(newOrder);
+      if (newAsn) saveAssignmentToFirestore(newAsn);
 
       res.status(201).json({ status: "success", order: newOrder });
     } catch (err: any) {
@@ -525,6 +535,7 @@ export function setupIMDModule(
       db.orders[index] = updated;
       logAudit(req.body.user || "Менежер", "ORDER_UPDATED", `Захиалга шинэчлэв: ${updated.orderNo}`, existing, updated);
       saveDB(db);
+      saveOrderToFirestore(updated);
 
       res.json({ status: "success", order: updated });
     } catch (err: any) {
@@ -559,6 +570,10 @@ export function setupIMDModule(
 
       logAudit("Менежер", "ORDER_DELETED", `Захиалга устгав: ${existing.orderNo}`, existing, null);
       saveDB(db);
+      deleteOrderFromFirestore(id);
+      if (existing.assignmentId) {
+        deleteAssignmentFromFirestore(existing.assignmentId);
+      }
 
       res.json({ status: "success", message: "Захиалга амжилттай устгагдлаа" });
     } catch (err: any) {
@@ -861,6 +876,8 @@ export function setupIMDModule(
 
       logAudit(req.body.user || "Менежер", "ASSIGNMENT_CREATED", `Томилолт хуваарилав: ${order.orderNo} -> ${vehiclePlate} (${primaryDriverName})`, null, newAssignment);
       saveDB(db);
+      saveAssignmentToFirestore(newAssignment);
+      if (order) saveOrderToFirestore(order);
 
       res.status(201).json({ status: "success", assignment: newAssignment });
     } catch (err: any) {
@@ -973,6 +990,8 @@ export function setupIMDModule(
 
       logAudit(req.body.user || "Менежер", "ASSIGNMENT_UPDATED", `Томилолт шинэчлэв: ${updated.orderNo} (${updated.status})`, existing, updated);
       saveDB(db);
+      saveAssignmentToFirestore(updated);
+      if (order) saveOrderToFirestore(order);
 
       res.json({ status: "success", assignment: updated, trip });
     } catch (err: any) {
@@ -1051,6 +1070,8 @@ export function setupIMDModule(
 
       logAudit(req.body.user || "Менежер", "ASSIGNMENT_CONFIRMED", `Томилолт баталгаажуулав: ${asn.orderNo} (${missionRoute}, ${actualKm} км, ODO: ${startOdo} -> ${endOdo})`, null, asn);
       saveDB(db);
+      saveAssignmentToFirestore(asn);
+      if (order) saveOrderToFirestore(order);
 
       res.json({
         status: "success",
@@ -1122,6 +1143,8 @@ export function setupIMDModule(
 
       logAudit("Менежер", "ASSIGNMENT_DELETED", `Томилолт устгав: ${existing.orderNo}`, existing, null);
       saveDB(db);
+      deleteAssignmentFromFirestore(id);
+      if (order) saveOrderToFirestore(order);
 
       res.json({ status: "success", message: "Томилолт амжилттай устгагдаж, замын хуудасны тооцооноос хасагдлаа" });
     } catch (err: any) {

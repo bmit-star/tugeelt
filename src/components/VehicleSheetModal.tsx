@@ -67,9 +67,9 @@ export const VehicleSheetModal: React.FC<VehicleSheetModalProps> = ({
       d.date,
       `"${d.zone || ""}"`,
       `"${d.task || ""}"`,
-      d.startOdo || "",
-      d.endOdo || "",
-      d.totalKm || "",
+      d.startOdo !== "" && !isNaN(Number(d.startOdo)) ? Math.round(Number(d.startOdo)) : (d.startOdo || ""),
+      d.endOdo !== "" && !isNaN(Number(d.endOdo)) ? Math.round(Number(d.endOdo)) : (d.endOdo || ""),
+      d.totalKm !== "" && !isNaN(Number(d.totalKm)) ? Math.round(Number(d.totalKm)) : (d.totalKm || ""),
       d.fuelLiters || "",
       `"${d.driverSignature || ""}"`,
       `"${d.verifierSignature || ""}"`

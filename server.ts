@@ -17,6 +17,19 @@ import { DailyAssignmentRepository } from "./server/database/repositories/daily-
 import { DriverRepository } from "./server/database/repositories/driver.repository";
 import { verifySessionToken } from "./server/auth/token.service";
 import { MASTER_30_CITY_ROUTES, MASTER_10_IMD_ROUTES, ALL_MASTER_FLEET_ROUTES } from "./src/constants/dailyRouteMaster";
+import {
+  getFirestoreDB,
+  loadAllFromFirestore,
+  hydrateStateWithFirestore,
+  triggerFullFirestoreSync,
+  saveAssignmentToFirestore,
+  deleteAssignmentFromFirestore,
+  saveOrderToFirestore,
+  deleteOrderFromFirestore,
+  saveDriverToFirestore,
+  deleteDriverFromFirestore,
+  saveConfigToFirestore
+} from "./server/services/firestore-persistence";
 
 // In this environment, Nginx reverse proxy listens on 8080 and forwards requests to 3000.
 // Node server must always listen on port 3000.
@@ -435,10 +448,6 @@ function loadDB(): DBState {
     const imdDriverIds = new Set(['775', '141', '9726', '14', '173', '314', '283', '5535', '8531', '9988']);
     loaded.drivers.forEach((d: any) => {
       if (d.isIMD || imdDriverIds.has(d.id)) {
-        if (d.salesRep === "IMD Томилолт" || d.salesRep === "undefined" || d.salesRep === "Борлуулалт") d.salesRep = "";
-        if (d.zone && (d.zone.includes("Тосонцэнгэл") || d.zone.includes("Хөвсгөл") || d.zone.includes("Завхан") || d.zone.includes("томилолт") || d.zone.includes("Дорноговь") || d.zone.includes("Дархан") || d.zone.includes("Баянхонгор") || d.zone.includes("Өмнөговь") || d.zone.includes("Увс") || d.zone.includes("Дорнод") || d.zone.includes("Орхон") || d.zone.includes("Сэлэнгэ"))) {
-          d.zone = "";
-        }
         if (d.defaultRoute === "Орон нутаг томилолт") d.defaultRoute = "Орон нутаг тээвэр";
       }
     });
@@ -471,26 +480,21 @@ function loadDB(): DBState {
       "ASN-685945"
     ]);
 
-    const cityPlates = new Set(
-      loaded.drivers.filter(d => !d.isIMD).map(d => (d.vehicle || "").replace(/\s+/g, "").toUpperCase())
-    );
+    // Preserve all real registered assignments (only strip explicit test/mock templates)
     loaded.assignments = (loaded.assignments || []).filter((a: any) => {
       if (!a) return false;
       const orderNo = (a.orderNo || "").toUpperCase();
       if (orderNo.startsWith("ORD-IMD-260915-") || (a.id && a.id.startsWith("asn_ord_imd_260915_")) || a.isMock) return false;
       if (PURGED_MOCK_ORDER_NOS.has(orderNo) || PURGED_MOCK_ASN_IDS.has(a.id) || PURGED_MOCK_ORDER_IDS.has(a.orderId)) return false;
-      const veh = (a.vehiclePlate || "").replace(/\s+/g, "").toUpperCase();
-      if (cityPlates.has(veh)) return false;
-      return isIMDDriver({ vehicle: veh, id: a.primaryDriverId });
+      return true;
     });
 
+    // Preserve all real registered orders
     loaded.orders = (loaded.orders || []).filter((o: any) => {
       if (!o) return false;
       const orderNo = (o.orderNo || "").toUpperCase();
       if (orderNo.startsWith("ORD-IMD-260915-") || (o.id && o.id.startsWith("order_ord_imd_260915_")) || o.isMock) return false;
       if (PURGED_MOCK_ORDER_NOS.has(orderNo) || PURGED_MOCK_ORDER_IDS.has(o.id)) return false;
-      const veh = (o.vehiclePlate || "").replace(/\s+/g, "").toUpperCase();
-      if (cityPlates.has(veh)) return false;
       return true;
     });
 
@@ -584,6 +588,13 @@ function saveDB(state: DBState) {
       // ignore snapshot error
     }
 
+    // Trigger Cloud Firestore persistence sync so changes survive updates & redeploys
+    try {
+      triggerFullFirestoreSync(state, 1500);
+    } catch (syncErr: any) {
+      console.warn("[SAVE_DB] Firestore sync trigger warning:", syncErr.message);
+    }
+
     // Sync assignments & orders to SQLite asynchronously/safely
     if (state.assignments && state.assignments.length > 0) {
       try {
@@ -622,6 +633,47 @@ function saveDB(state: DBState) {
 }
 
 let db = loadDB();
+
+// Cloud Persistence Hydration: Fetch persistent state from Firestore on boot
+(async () => {
+  try {
+    const cloudData = await loadAllFromFirestore();
+    if (cloudData) {
+      const modified = hydrateStateWithFirestore(db, cloudData);
+      if (modified) {
+        saveDB(db);
+        console.log("[FIRESTORE_HYDRATE] State successfully hydrated from cloud Firestore!");
+      }
+
+      // Sync hydrated daily assignments to SQLite database so repository queries see them immediately
+      if (db.dailyAssignments && db.dailyAssignments.length > 0) {
+        try {
+          const dates = Array.from(new Set(db.dailyAssignments.map((a: any) => a.businessDate).filter(Boolean)));
+          for (const d of dates) {
+            const dateAss = db.dailyAssignments.filter((a: any) => a.businessDate === d);
+            const fineRule = {
+              fineAmount: Number((db.fineConfig as any)?.fineAmount || (db.fineConfig as any)?.defaultFineAmount || 10000),
+              driverDeduction: Number((db.fineConfig as any)?.driverDeduction || 10000),
+              feeAmount: Number((db.fineConfig as any)?.feeAmount || 0),
+              reason: String((db.fineConfig as any)?.reason || (db.fineConfig as any)?.fineReason || "Жолооч солигдсон")
+            };
+            DailyAssignmentRepository.saveBatchAssignments(
+              String(d),
+              dateAss,
+              fineRule,
+              "firestore_hydrate"
+            );
+          }
+          console.log(`[FIRESTORE_HYDRATE] Synced ${db.dailyAssignments.length} daily assignments across ${dates.length} dates to SQLite`);
+        } catch (sqliteErr: any) {
+          console.warn("[FIRESTORE_HYDRATE] SQLite batch sync warning:", sqliteErr.message);
+        }
+      }
+    }
+  } catch (err: any) {
+    console.warn("[FIRESTORE_HYDRATE] Warning on initial load:", err.message);
+  }
+})();
 
 // Register IMD Logistics Module (Orders, Assignments, Routes, Reports, Public Share & Driver View)
 setupIMDModule(app, db, saveDB, fetchGPSBoxTelemetry);
@@ -1202,7 +1254,7 @@ app.post("/api/trips/start", (req: Request, res: Response) => {
       vehicleNumber: vehicleNumber || "----",
       salesRep: salesRep || "Төлөөлөгч тодорхойгүй",
       zone: zone || "УБ-01 • Төв / Сүхбаатар",
-      startOdo: Number(startOdo),
+      startOdo: Math.round(Number(startOdo)),
       endOdo: null,
       totalKm: 0,
       fuelLiters: 0,
@@ -1242,8 +1294,8 @@ app.post("/api/trips/end", (req: Request, res: Response) => {
     }
 
     const targetTrip = db.trips[tripIndex];
-    const endOdoNum = Number(endOdo);
-    const startOdoNum = Number(targetTrip.startOdo);
+    const endOdoNum = Math.round(Number(endOdo));
+    const startOdoNum = Math.round(Number(targetTrip.startOdo));
 
     if (endOdoNum < startOdoNum) {
       return res.status(400).json({
@@ -1541,6 +1593,7 @@ app.post("/api/drivers", (req: Request, res: Response) => {
         isCustom: true
       };
       saveDB(db);
+      saveDriverToFirestore(db.drivers[existingIndex]);
       return res.json({ status: "success", driver: db.drivers[existingIndex] });
     }
 
@@ -1563,6 +1616,10 @@ app.post("/api/drivers", (req: Request, res: Response) => {
 
     db.drivers.push(newDriver);
     saveDB(db);
+    saveDriverToFirestore(newDriver);
+    try {
+      DriverRepository.save(newDriver);
+    } catch (e) {}
     res.json({ status: "success", driver: newDriver });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -1571,7 +1628,8 @@ app.post("/api/drivers", (req: Request, res: Response) => {
 
 app.put("/api/drivers/:id", (req: Request, res: Response) => {
   const { id } = req.params;
-  const index = db.drivers.findIndex(d => d.id.toUpperCase() === id.toUpperCase());
+  const cleanId = String(id).trim().toUpperCase();
+  const index = db.drivers.findIndex(d => String(d.id || "").trim().toUpperCase() === cleanId || String(d.code || "").trim().toUpperCase() === cleanId);
   if (index === -1) return res.status(404).json({ error: "Жолооч олдсонгүй" });
 
   const body = req.body;
@@ -1581,13 +1639,23 @@ app.put("/api/drivers/:id", (req: Request, res: Response) => {
 
   db.drivers[index] = { ...db.drivers[index], ...body };
   saveDB(db);
+  saveDriverToFirestore(db.drivers[index]);
+  try {
+    DriverRepository.save(db.drivers[index]);
+  } catch (e) {}
   res.json({ status: "success", driver: db.drivers[index] });
 });
 
 app.delete("/api/drivers/:id", (req: Request, res: Response) => {
   const { id } = req.params;
-  db.drivers = db.drivers.filter(d => d.id.toUpperCase() !== id.toUpperCase());
+  const cleanId = String(id).trim().toUpperCase();
+  db.drivers = db.drivers.filter(d => String(d.id || "").trim().toUpperCase() !== cleanId && String(d.code || "").trim().toUpperCase() !== cleanId);
   saveDB(db);
+  deleteDriverFromFirestore(id);
+  try {
+    const sqlite = getDatabase();
+    sqlite.prepare("DELETE FROM drivers WHERE id = ? OR code = ?").run(id, id);
+  } catch (e) {}
   res.json({ status: "success", message: "Жолооч устгагдлаа" });
 });
 
@@ -1860,7 +1928,8 @@ async function syncDriverWaybillUpToToday(driver: Driver, targetMonth: string): 
     // Preserve genuine manual entries made by drivers or managers
     const isManualTrip = existing && (
       (existing as any).source === "manual" ||
-      (existing as any).isManual === true
+      (existing as any).isManual === true ||
+      Boolean((existing as any).manualEditedAt)
     );
     if (isManualTrip) {
       runningOdo = existing.endOdo || existing.startOdo || runningOdo;
@@ -2125,15 +2194,15 @@ app.post("/api/waybills/save-day", (req: Request, res: Response) => {
     const veh = vehicleNumber || driver?.vehicle || driverId;
     const cleanVeh = String(veh).trim();
 
-    const startNum = startOdo !== "" && startOdo !== undefined && startOdo !== null ? Number(startOdo) : undefined;
-    const endNum = endOdo !== "" && endOdo !== undefined && endOdo !== null ? Number(endOdo) : undefined;
+    const startNum = startOdo !== "" && startOdo !== undefined && startOdo !== null ? Math.round(Number(startOdo)) : undefined;
+    const endNum = endOdo !== "" && endOdo !== undefined && endOdo !== null ? Math.round(Number(endOdo)) : undefined;
     const isIMT = isIMTDriver(driver);
     let calcTotalKm =
-      totalKm !== undefined && totalKm !== null && totalKm !== ""
-        ? Number(totalKm)
-        : (endNum !== undefined && startNum !== undefined)
-        ? Math.max(0, endNum - startNum)
-        : 0;
+      (endNum !== undefined && startNum !== undefined && endNum >= startNum)
+        ? (endNum - startNum)
+        : (totalKm !== undefined && totalKm !== null && totalKm !== ""
+            ? Math.round(Number(totalKm))
+            : 0);
 
     // For IMT drivers: Total KM is strictly evening end odo - morning start odo (47°54'07.2"N 106°51'02.7"E, 500m depot geofence 06:00-23:59)
     if (isIMT && endNum !== undefined && startNum !== undefined) {
@@ -2164,6 +2233,9 @@ app.post("/api/waybills/save-day", (req: Request, res: Response) => {
       routeNote: routeNote || (calcTotalKm > 0 ? "Борлуулалт" : "Амарсан"),
       status: "✅ ХЭВИЙН",
       phase: phase || "complete",
+      source: "manual",
+      isManual: true,
+      manualEditedAt: new Date().toISOString()
     };
 
     if (existingIndex >= 0) {
@@ -2230,9 +2302,11 @@ app.post("/api/waybills/save-month-batch", (req: Request, res: Response) => {
       // Do not allow saving future dates
       if (d.date > todayStr) return;
 
-      const startOdoNum = d.startOdo !== "" && d.startOdo !== undefined && d.startOdo !== null ? Number(d.startOdo) : undefined;
-      const endOdoNum = d.endOdo !== "" && d.endOdo !== undefined && d.endOdo !== null ? Number(d.endOdo) : undefined;
-      const totalKmNum = d.totalKm !== "" && d.totalKm !== undefined && d.totalKm !== null ? Number(d.totalKm) : (endOdoNum !== undefined && startOdoNum !== undefined ? endOdoNum - startOdoNum : undefined);
+      const startOdoNum = d.startOdo !== "" && d.startOdo !== undefined && d.startOdo !== null ? Math.round(Number(d.startOdo)) : undefined;
+      const endOdoNum = d.endOdo !== "" && d.endOdo !== undefined && d.endOdo !== null ? Math.round(Number(d.endOdo)) : undefined;
+      const totalKmNum = (endOdoNum !== undefined && startOdoNum !== undefined && endOdoNum >= startOdoNum)
+        ? (endOdoNum - startOdoNum)
+        : (d.totalKm !== "" && d.totalKm !== undefined && d.totalKm !== null ? Math.round(Number(d.totalKm)) : undefined);
 
       if (startOdoNum === undefined && endOdoNum === undefined && totalKmNum === undefined && !d.zone && !d.fuelLiters) {
         return;
@@ -2268,6 +2342,9 @@ app.post("/api/waybills/save-month-batch", (req: Request, res: Response) => {
         routeNote: d.task || "Борлуулалт",
         status: "✅ ХЭВИЙН",
         phase: "complete",
+        source: "manual",
+        isManual: true,
+        manualEditedAt: new Date().toISOString()
       };
 
       if (existingIndex >= 0) {
@@ -2692,6 +2769,7 @@ app.post("/api/work-schedule", (req: Request, res: Response) => {
     };
 
     saveDB(db);
+    saveConfigToFirestore("work_schedule", db.workScheduleConfig);
 
     res.json({
       status: "success",
@@ -3082,6 +3160,9 @@ function buildSingleVehicleSheet(driver: Driver, yearMonth: string) {
   if (previousEndOdo === undefined) {
     previousEndOdo = driver.autoOdoConfig?.monthStartOdo || 0;
   }
+  if (previousEndOdo !== undefined) {
+    previousEndOdo = Math.round(previousEndOdo);
+  }
 
   const isAutoFillOn = (db.gpsboxConfig.autoFillEnabled !== false) && (driver.autoOdoConfig?.enabled !== false);
   const isIMT = isIMTDriver(driver);
@@ -3156,13 +3237,11 @@ function buildSingleVehicleSheet(driver: Driver, yearMonth: string) {
       );
 
       if (isManualEntry && trip) {
-        startOdoVal = trip.startOdo !== undefined ? trip.startOdo : "";
-        endOdoVal = trip.endOdo !== undefined ? trip.endOdo : "";
-        totalKmVal = trip.totalKm !== undefined ? trip.totalKm : (
-          endOdoVal !== "" && startOdoVal !== "" && Number(endOdoVal) >= Number(startOdoVal)
-            ? Number(endOdoVal) - Number(startOdoVal)
-            : ""
-        );
+        startOdoVal = trip.startOdo !== undefined && trip.startOdo !== null ? Math.round(Number(trip.startOdo)) : "";
+        endOdoVal = trip.endOdo !== undefined && trip.endOdo !== null ? Math.round(Number(trip.endOdo)) : "";
+        totalKmVal = (endOdoVal !== "" && startOdoVal !== "" && Number(endOdoVal) >= Number(startOdoVal))
+          ? (Number(endOdoVal) - Number(startOdoVal))
+          : (trip.totalKm !== undefined && trip.totalKm !== null ? Math.round(Number(trip.totalKm)) : "");
         dayZone = trip.zone || (isRestDay ? "Хуваарьт амралт" : (driver.defaultRoute || "УБ Төв"));
         dayTaskNote = trip.routeNote || (isRestDay ? "Хуваарьт амралт" : dayTask);
         daySalesRep = trip.salesRep || driver.salesRep || "";
@@ -3239,11 +3318,11 @@ function buildSingleVehicleSheet(driver: Driver, yearMonth: string) {
 
       if (depAsn) {
         const missionRoute = depAsn.province ? `${depAsn.province} - ${depAsn.destination}` : depAsn.destination;
-        const totalKm = depAsn.actualKm || depAsn.roundTripKm || (trip && Number(trip.totalKm) > 0 ? Number(trip.totalKm) : 1560);
+        const totalKm = Math.round(depAsn.actualKm || depAsn.roundTripKm || (trip && Number(trip.totalKm) > 0 ? Number(trip.totalKm) : 1560));
         const hasReturnDate = depAsn.returnDate && depAsn.returnDate !== depAsn.departureDate;
         const depKm = hasReturnDate ? Math.round(totalKm / 2) : totalKm;
 
-        const startOdoNum = previousEndOdo !== undefined ? previousEndOdo : (driver.autoOdoConfig?.monthStartOdo || driver.apiOdo || 0);
+        const startOdoNum = previousEndOdo !== undefined ? Math.round(previousEndOdo) : Math.round(driver.autoOdoConfig?.monthStartOdo || driver.apiOdo || 0);
         startOdoVal = startOdoNum;
         totalKmVal = depKm;
         endOdoVal = startOdoNum + depKm;
@@ -3260,10 +3339,10 @@ function buildSingleVehicleSheet(driver: Driver, yearMonth: string) {
         previousEndOdo = Number(endOdoVal);
       } else if (retAsn) {
         const missionRoute = retAsn.province ? `${retAsn.province} - ${retAsn.destination} (Буцах)` : `${retAsn.destination} (Буцах)`;
-        const totalKm = retAsn.actualKm || retAsn.roundTripKm || 1560;
+        const totalKm = Math.round(retAsn.actualKm || retAsn.roundTripKm || 1560);
         const retKm = totalKm - Math.round(totalKm / 2);
 
-        const startOdoNum = previousEndOdo !== undefined ? previousEndOdo : (driver.autoOdoConfig?.monthStartOdo || driver.apiOdo || 0);
+        const startOdoNum = previousEndOdo !== undefined ? Math.round(previousEndOdo) : Math.round(driver.autoOdoConfig?.monthStartOdo || driver.apiOdo || 0);
         startOdoVal = startOdoNum;
         totalKmVal = retKm;
         endOdoVal = startOdoNum + retKm;
@@ -3279,7 +3358,7 @@ function buildSingleVehicleSheet(driver: Driver, yearMonth: string) {
         dayStatus = isToday ? "LIVE" : "CONFIRMED";
         previousEndOdo = Number(endOdoVal);
       } else if (midAsn) {
-        const startOdoNum = previousEndOdo !== undefined ? previousEndOdo : (driver.autoOdoConfig?.monthStartOdo || driver.apiOdo || 0);
+        const startOdoNum = previousEndOdo !== undefined ? Math.round(previousEndOdo) : Math.round(driver.autoOdoConfig?.monthStartOdo || driver.apiOdo || 0);
         startOdoVal = startOdoNum;
         endOdoVal = startOdoNum;
         totalKmVal = 0;
@@ -3291,8 +3370,8 @@ function buildSingleVehicleSheet(driver: Driver, yearMonth: string) {
         dayStatus = "CONFIRMED";
         previousEndOdo = startOdoNum;
       } else if (hasMissionTrip && trip) {
-        const startOdoNum = previousEndOdo !== undefined ? previousEndOdo : (trip.startOdo ? Number(trip.startOdo) : (driver.autoOdoConfig?.monthStartOdo || driver.apiOdo || 0));
-        const dayKm = Number(trip.totalKm) || (Number(trip.endOdo) > startOdoNum ? Number(trip.endOdo) - startOdoNum : 1560);
+        const startOdoNum = previousEndOdo !== undefined ? Math.round(previousEndOdo) : (trip.startOdo ? Math.round(Number(trip.startOdo)) : Math.round(driver.autoOdoConfig?.monthStartOdo || driver.apiOdo || 0));
+        const dayKm = trip.totalKm !== undefined && trip.totalKm !== null ? Math.round(Number(trip.totalKm)) : (Number(trip.endOdo) > startOdoNum ? Math.round(Number(trip.endOdo) - startOdoNum) : 1560);
         startOdoVal = startOdoNum;
         totalKmVal = dayKm;
         endOdoVal = startOdoNum + dayKm;
@@ -3357,30 +3436,40 @@ function buildSingleVehicleSheet(driver: Driver, yearMonth: string) {
       previousEndOdo = currentOdo;
     } else {
       const startOdoNum = previousEndOdo !== undefined
-        ? previousEndOdo
+        ? Math.round(previousEndOdo)
         : (trip && trip.startOdo !== undefined && Number(trip.startOdo) > 0
-            ? Number(trip.startOdo)
-            : (driver.autoOdoConfig?.monthStartOdo || driver.apiOdo || 0));
+            ? Math.round(Number(trip.startOdo))
+            : Math.round(driver.autoOdoConfig?.monthStartOdo || driver.apiOdo || 0));
       startOdoVal = startOdoNum;
 
       let dayKm = 0;
-      if (trip && trip.totalKm !== undefined && Number(trip.totalKm) >= 0) {
-        dayKm = Number(trip.totalKm);
+      if (trip && ((trip as any).source === "manual" || (trip as any).isManual || (trip as any).manualEditedAt)) {
+        startOdoVal = trip.startOdo !== undefined && trip.startOdo !== null ? Math.round(Number(trip.startOdo)) : startOdoNum;
+        endOdoVal = trip.endOdo !== undefined && trip.endOdo !== null ? Math.round(Number(trip.endOdo)) : (Number(startOdoVal) + Math.round(Number(trip.totalKm) || 0));
+        dayKm = Number(endOdoVal) >= Number(startOdoVal) ? (Number(endOdoVal) - Number(startOdoVal)) : Math.round(Number(trip.totalKm) || 0);
+        totalKmVal = dayKm;
+        dayZone = trip.zone || dayZone;
+        dayTaskNote = trip.routeNote || dayTaskNote;
+        daySalesRep = trip.salesRep || daySalesRep;
+      } else if (trip && trip.totalKm !== undefined && Number(trip.totalKm) >= 0) {
+        dayKm = Math.round(Number(trip.totalKm));
       } else if (gpsRecord && gpsRecord.totalKm >= 0) {
-        dayKm = Number(gpsRecord.totalKm);
+        dayKm = Math.round(Number(gpsRecord.totalKm));
       } else if (trip && trip.endOdo !== undefined && Number(trip.endOdo) > startOdoNum) {
-        dayKm = Number(trip.endOdo) - startOdoNum;
+        dayKm = Math.round(Number(trip.endOdo) - startOdoNum);
       } else {
         dayKm = 0;
       }
 
-      // Live Telemetry check if today
-      if (isToday && driver.apiOdo && driver.apiOdo >= startOdoNum) {
-        endOdoVal = driver.apiOdo;
-        totalKmVal = Number(endOdoVal) - startOdoNum;
-      } else {
-        endOdoVal = startOdoNum + dayKm;
-        totalKmVal = Number(endOdoVal) - startOdoNum;
+      // Live Telemetry check if today (only if not manually edited)
+      if (!(trip && ((trip as any).source === "manual" || (trip as any).isManual || (trip as any).manualEditedAt))) {
+        if (isToday && driver.apiOdo && Math.round(driver.apiOdo) >= startOdoNum) {
+          endOdoVal = Math.round(driver.apiOdo);
+          totalKmVal = Number(endOdoVal) - startOdoNum;
+        } else {
+          endOdoVal = startOdoNum + dayKm;
+          totalKmVal = dayKm;
+        }
       }
 
       const numStart = Number(startOdoVal);
@@ -3407,16 +3496,16 @@ function buildSingleVehicleSheet(driver: Driver, yearMonth: string) {
       date: dayStr,
       zone: dayZone,
       task: trip ? `${trip.routeNote || dayTaskNote}${trip.fuelStation ? ` (${trip.fuelStation})` : ""}` : dayTaskNote,
-      startOdo: startOdoVal,
-      endOdo: endOdoVal,
-      totalKm: totalKmVal,
+      startOdo: (startOdoVal as any) !== "" && !isNaN(Number(startOdoVal)) ? Math.round(Number(startOdoVal)) : "",
+      endOdo: (endOdoVal as any) !== "" && !isNaN(Number(endOdoVal)) ? Math.round(Number(endOdoVal)) : "",
+      totalKm: (totalKmVal as any) !== "" && !isNaN(Number(totalKmVal)) ? Math.round(Number(totalKmVal)) : "",
       fuelLiters: fuelLitersVal,
       salesRep: daySalesRep || driver.salesRep || "",
       driverSignature: (dayStatus === "CONFIRMED" || dayStatus === "LIVE") ? `${driver.name} (Цахим)` : "",
       verifierSignature: (dayStatus === "CONFIRMED" || dayStatus === "LIVE") ? `${daySalesRep || driver.salesRep || "ХТ"} (Хянасан)` : "",
       status: dayStatus,
       source: "gpsbox_api",
-      gpsDailyKm: gpsKm !== undefined ? gpsKm : "",
+      gpsDailyKm: gpsKm !== undefined ? Math.round(Number(gpsKm)) : "",
       diffWarning,
       depotRuleApplied: isIMT && !isRestDay,
     });
@@ -3459,12 +3548,12 @@ function buildSingleVehicleSheet(driver: Driver, yearMonth: string) {
     model: driver.model || "Isuzu",
     yearMonth,
     autoFillEnabled: isAutoFillOn,
-    monthTotalKm,
+    monthTotalKm: Math.round(monthTotalKm),
     monthTotalFuel,
-    monthStartOdo: firstValidOdo !== undefined ? firstValidOdo : "",
-    monthEndOdo: lastValidOdo !== undefined ? lastValidOdo : "",
-    monthGpsTotalKm,
-    odoDiff,
+    monthStartOdo: firstValidOdo !== undefined ? Math.round(firstValidOdo) : "",
+    monthEndOdo: lastValidOdo !== undefined ? Math.round(lastValidOdo) : "",
+    monthGpsTotalKm: Math.round(monthGpsTotalKm),
+    odoDiff: odoDiff !== undefined ? Math.round(odoDiff) : undefined,
     fuelAvgLitersPer100Km: fuelAvg,
     isIMT,
     isIMD,
@@ -3522,6 +3611,7 @@ app.post("/api/gpsbox/config", (req: Request, res: Response) => {
   if (apiKey) db.gpsboxConfig.apiKey = apiKey;
   if (autoFillEnabled !== undefined) db.gpsboxConfig.autoFillEnabled = !!autoFillEnabled;
   saveDB(db);
+  saveConfigToFirestore("gpsbox", db.gpsboxConfig);
   cachedTelemetryMap = {};
   lastFetchTime = 0;
   res.json({ status: "success", config: db.gpsboxConfig });
@@ -4737,7 +4827,9 @@ async function startServer() {
       try {
         savedList = DailyAssignmentRepository.findByDate(queryDate);
       } catch (e) {
-        // Fallback to in-memory JSON state
+        savedList = [];
+      }
+      if (!savedList || savedList.length === 0) {
         savedList = (db.dailyAssignments || []).filter((a: any) => a.businessDate === queryDate);
       }
 
@@ -4791,32 +4883,46 @@ async function startServer() {
           };
         });
       } else {
-        // Build initial default list from authoritative 30 City + 10 IMD master routes
+        // Build initial default list from authoritative 30 City + 10 IMD master routes, using current driver overrides
         assignments = ALL_MASTER_FLEET_ROUTES.map(def => {
-          const matchedDriver = db.drivers.find(d => d.name === def.driverName || d.code === def.routeId);
+          const cleanDefPlate = def.vehiclePlate.replace(/\s+/g, "").toUpperCase();
+          const matchedDriver = db.drivers.find(d => 
+            (d.code && d.code.toUpperCase() === def.routeId.toUpperCase()) ||
+            (d.id && d.id.toUpperCase() === def.routeId.toUpperCase()) ||
+            (d.vehicle && d.vehicle.replace(/\s+/g, "").toUpperCase() === cleanDefPlate) ||
+            d.name === def.driverName
+          );
+
+          const curName = matchedDriver?.name || def.driverName;
+          const curCode = matchedDriver?.code || matchedDriver?.id || def.routeId;
+          const curPhone = matchedDriver?.phone || def.driverPhone;
+          const curPlate = matchedDriver?.vehicle || def.vehiclePlate;
+          const curSalesRep = matchedDriver?.salesRep !== undefined ? matchedDriver.salesRep : def.salesRep;
+          const curRouteName = matchedDriver?.defaultRoute || (matchedDriver as any)?.zone || def.zone;
+
           return {
             id: `dda_${queryDate}_${def.routeId}`,
             businessDate: queryDate,
             routeId: def.routeId,
-            routeName: def.zone,
+            routeName: curRouteName,
             originalDriverId: matchedDriver?.id || def.routeId,
-            originalDriverName: def.driverName,
-            originalDriverCode: matchedDriver?.code || def.routeId,
-            driverPhone: def.driverPhone,
+            originalDriverName: curName,
+            originalDriverCode: curCode,
+            driverPhone: curPhone,
             driverStatus: "Идэвхтэй",
             driverReason: "",
             actualDriverId: matchedDriver?.id || def.routeId,
-            actualDriverName: def.driverName,
-            actualDriverCode: matchedDriver?.code || def.routeId,
-            actualDriverPhone: def.driverPhone,
-            salesRep: def.salesRep,
+            actualDriverName: curName,
+            actualDriverCode: curCode,
+            actualDriverPhone: curPhone,
+            salesRep: curSalesRep,
             salesRepPhone: def.salesRepPhone,
             srCode: def.srCode,
-            originalVehiclePlate: def.vehiclePlate,
-            vehiclePlate: def.vehiclePlate,
+            originalVehiclePlate: curPlate,
+            vehiclePlate: curPlate,
             vehicleStatus: "Хэвийн",
             vehicleReason: "",
-            actualVehiclePlate: def.vehiclePlate,
+            actualVehiclePlate: curPlate,
             vehicleChanged: false,
             routeStatus: "Гарсан",
             driverChanged: false,
@@ -4994,6 +5100,10 @@ async function startServer() {
       }
 
       saveDB(db);
+      await Promise.allSettled([
+        saveConfigToFirestore("daily_assignments", db.dailyAssignments),
+        saveConfigToFirestore("fine_config", db.fineConfig)
+      ]);
 
       res.json({
         success: true,
@@ -5023,6 +5133,10 @@ async function startServer() {
       try {
         report = DailyAssignmentRepository.getMonthlyExceptionReport(month, division);
       } catch (e) {
+        report = null;
+      }
+
+      if (!report || report.totalAssignments === 0) {
         // Fallback to in-memory db
         const allAss = (db.dailyAssignments || []).filter((a: any) => {
           if (!a.businessDate?.startsWith(month)) return false;
@@ -5030,22 +5144,24 @@ async function startServer() {
           return true;
         });
 
-        const vehicleSwaps = allAss.filter((a: any) => a.vehicleChanged);
-        const driverSwaps = allAss.filter((a: any) => a.driverChanged);
-        const nonDepartures = allAss.filter((a: any) => a.routeStatus === "Гараагүй" || a.routeStatus === "Цуцалсан" || a.routeStatus === "Хойшилсон");
+        if (allAss.length > 0 || !report) {
+          const vehicleSwaps = allAss.filter((a: any) => a.vehicleChanged);
+          const driverSwaps = allAss.filter((a: any) => a.driverChanged);
+          const nonDepartures = allAss.filter((a: any) => a.routeStatus === "Гараагүй" || a.routeStatus === "Цуцалсан" || a.routeStatus === "Хойшилсон");
 
-        report = {
-          month,
-          division,
-          totalRecordedDays: Array.from(new Set(allAss.map((a: any) => a.businessDate))).length,
-          totalAssignments: allAss.length,
-          vehicleSwapsCount: vehicleSwaps.length,
-          driverSwapsCount: driverSwaps.length,
-          nonDeparturesCount: nonDepartures.length,
-          vehicleSwaps,
-          driverSwaps,
-          nonDepartures
-        };
+          report = {
+            month,
+            division,
+            totalRecordedDays: Array.from(new Set(allAss.map((a: any) => a.businessDate))).length,
+            totalAssignments: allAss.length,
+            vehicleSwapsCount: vehicleSwaps.length,
+            driverSwapsCount: driverSwaps.length,
+            nonDeparturesCount: nonDepartures.length,
+            vehicleSwaps,
+            driverSwaps,
+            nonDepartures
+          };
+        }
       }
 
       res.json({
@@ -5068,6 +5184,9 @@ async function startServer() {
       try {
         rows = DailyAssignmentRepository.findByDate(queryDate);
       } catch (e) {
+        rows = [];
+      }
+      if (!rows || rows.length === 0) {
         rows = (db.dailyAssignments || []).filter((a: any) => a.businessDate === queryDate);
       }
 

@@ -16,25 +16,57 @@ export function getDatabase(dbFilePath = config.dbPath): DatabaseSync {
   }
 
   logger.info("Initializing SQLite database connection", { dbFilePath });
-  const db = new DatabaseSync(dbFilePath);
+  
+  const initDb = (filePath: string): DatabaseSync => {
+    const db = new DatabaseSync(filePath);
+    // Configure high-performance & durable WAL mode
+    db.exec("PRAGMA journal_mode = WAL;");
+    db.exec("PRAGMA synchronous = NORMAL;");
+    db.exec("PRAGMA foreign_keys = ON;");
+    db.exec("PRAGMA busy_timeout = 10000;");
 
-  // Configure high-performance & durable WAL mode
-  db.exec("PRAGMA journal_mode = WAL;");
-  db.exec("PRAGMA synchronous = NORMAL;");
-  db.exec("PRAGMA foreign_keys = ON;");
-  db.exec("PRAGMA busy_timeout = 10000;");
+    // Verify integrity
+    const check = db.prepare("PRAGMA integrity_check;").get() as any;
+    if (check && check.integrity_check && check.integrity_check !== "ok") {
+      throw new Error(`Integrity check failed: ${check.integrity_check}`);
+    }
 
-  // Bootstrap tables and indices
-  db.exec(SCHEMA_SQL);
+    // Bootstrap tables and indices
+    db.exec(SCHEMA_SQL);
 
-  // Safe incremental schema adjustments
+    // Safe incremental schema adjustments
+    try {
+      db.exec("ALTER TABLE drivers ADD COLUMN km_privacy_pin TEXT;");
+    } catch (e) {
+      // Column already exists or schema initialized fresh
+    }
+
+    return db;
+  };
+
   try {
-    db.exec("ALTER TABLE drivers ADD COLUMN km_privacy_pin TEXT;");
-  } catch (e) {
-    // Column already exists or schema initialized fresh
+    instance = initDb(dbFilePath);
+  } catch (err: any) {
+    logger.error("Database initialization or integrity error, creating fresh database backup:", err.message);
+    try {
+      if (fs.existsSync(dbFilePath)) {
+        const corruptBackup = `${dbFilePath}.corrupt.${Date.now()}`;
+        fs.renameSync(dbFilePath, corruptBackup);
+        if (fs.existsSync(`${dbFilePath}-wal`)) {
+          fs.renameSync(`${dbFilePath}-wal`, `${corruptBackup}-wal`);
+        }
+        if (fs.existsSync(`${dbFilePath}-shm`)) {
+          fs.renameSync(`${dbFilePath}-shm`, `${corruptBackup}-shm`);
+        }
+        logger.info(`Backed up corrupted database to ${corruptBackup}`);
+      }
+      instance = initDb(dbFilePath);
+    } catch (recreateErr: any) {
+      logger.error("Fatal: failed to recreate database after corruption:", recreateErr.message);
+      throw recreateErr;
+    }
   }
 
-  instance = db;
   return instance;
 }
 

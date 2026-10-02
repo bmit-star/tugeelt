@@ -161,13 +161,13 @@ export const WaybillPrintTemplate: React.FC<WaybillPrintTemplateProps> = ({
                   {row.task || (row.status === "REST_DAY" ? "Хуваарьт амралт" : (isProvince ? "Орон нутгийн тээвэр" : "Борлуулалт"))}
                 </td>
                 <td className="p-0.5 border-r border-slate-300 text-right font-mono text-[9px] pr-1">
-                  {row.startOdo ? Number(row.startOdo).toLocaleString() : ""}
+                  {row.startOdo !== "" && !isNaN(Number(row.startOdo)) ? Math.round(Number(row.startOdo)).toLocaleString() : ""}
                 </td>
                 <td className="p-0.5 border-r border-slate-300 text-right font-mono text-[9px] pr-1">
-                  {row.endOdo ? Number(row.endOdo).toLocaleString() : ""}
+                  {row.endOdo !== "" && !isNaN(Number(row.endOdo)) ? Math.round(Number(row.endOdo)).toLocaleString() : ""}
                 </td>
                 <td className="p-0.5 border-r border-slate-300 text-right font-mono font-black text-slate-900 bg-slate-50/80 text-[9px] pr-1">
-                  {row.totalKm ? Number(row.totalKm).toLocaleString() : ""}
+                  {row.totalKm !== "" && !isNaN(Number(row.totalKm)) ? Math.round(Number(row.totalKm)).toLocaleString() : ""}
                 </td>
                 <td className="p-0.5 border-r border-slate-300 text-right font-mono text-[9px] pr-1">
                   {row.fuelLiters ? `${row.fuelLiters}` : ""}
@@ -197,7 +197,7 @@ export const WaybillPrintTemplate: React.FC<WaybillPrintTemplateProps> = ({
                 Нийт явсан км:
               </td>
               <td className="p-1 border-r border-slate-400 text-right font-black font-mono text-xs bg-sky-100 text-[#0878bd] pr-1">
-                {sheetData.monthTotalKm.toLocaleString()}
+                {sheetData.monthTotalKm !== undefined ? Math.round(sheetData.monthTotalKm).toLocaleString() : ""}
               </td>
               <td className="p-1 border-r border-slate-400 text-right font-black font-mono text-[10px] pr-1">
                 {sheetData.monthTotalFuel > 0 ? sheetData.monthTotalFuel.toFixed(1) : ""}

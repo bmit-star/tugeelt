@@ -329,7 +329,7 @@ export const DriverWaybill: React.FC<DriverWaybillProps> = ({
       } else {
         setTripStatus({ phase: "none", startOdo: 0 });
         if (updatedDriver?.apiOdo && !startOdoInput) {
-          setStartOdoInput(String(updatedDriver.apiOdo));
+          setStartOdoInput(String(Math.round(updatedDriver.apiOdo)));
         }
       }
 
@@ -458,7 +458,7 @@ export const DriverWaybill: React.FC<DriverWaybillProps> = ({
   // Submit Step 1: Start Odometer
   const handleSubmitStartOdo = async (e: React.FormEvent) => {
     e.preventDefault();
-    const val = Number(startOdoInput);
+    const val = Math.round(Number(startOdoInput));
     if (!val || isNaN(val) || val <= 0) {
       onShowToast("Эхлэх ODO заалтыг зөв оруулна уу!", "error");
       return;
@@ -488,7 +488,7 @@ export const DriverWaybill: React.FC<DriverWaybillProps> = ({
   // Submit Step 2: End Odometer & Fuel
   const handleSubmitEndOdo = async (e: React.FormEvent) => {
     e.preventDefault();
-    const endVal = Number(endOdoInput);
+    const endVal = Math.round(Number(endOdoInput));
     if (!endVal || isNaN(endVal) || endVal <= 0) {
       onShowToast("Төгсгөх ODO заалтыг зөв оруулна уу!", "error");
       return;
@@ -553,14 +553,14 @@ export const DriverWaybill: React.FC<DriverWaybillProps> = ({
   // Pre-fill end ODO with live GPS ODO only if valid
   const handleAutoFillEndOdo = () => {
     if (telemetry?.odo && telemetry.odo >= tripStatus.startOdo) {
-      setEndOdoInput(String(telemetry.odo));
+      setEndOdoInput(String(Math.round(telemetry.odo)));
     } else {
       onShowToast("GPS ODO заалт олдсонгүй эсвэл эхлэх заалтаас бага байна. Бодит заалтаа гараар оруулна уу.", "info");
     }
   };
 
   const calculatedTotalKm = endOdoInput && tripStatus.startOdo 
-    ? Math.max(0, Number(endOdoInput) - tripStatus.startOdo) 
+    ? Math.round(Math.max(0, Number(endOdoInput) - tripStatus.startOdo)) 
     : 0;
 
   const { schedule } = reminderState;
@@ -1247,7 +1247,7 @@ export const DriverWaybill: React.FC<DriverWaybillProps> = ({
                   id="saved-start-odo-display"
                   type="text"
                   readOnly
-                  value={`${tripStatus.startOdo.toLocaleString()} км`}
+                  value={`${Math.round(tripStatus.startOdo).toLocaleString()} км`}
                   className="w-full h-11 pl-10 pr-4 rounded-xl border border-slate-200 bg-slate-100 text-slate-800 text-sm font-black cursor-not-allowed"
                 />
               </div>
@@ -1265,14 +1265,14 @@ export const DriverWaybill: React.FC<DriverWaybillProps> = ({
                     onClick={handleAutoFillEndOdo}
                     className="text-[10px] font-bold text-[#0878bd] hover:underline"
                   >
-                    GPS-с авах ({telemetry.odo} км)
+                    GPS-с авах ({Math.round(telemetry.odo)} км)
                   </button>
                 ) : null}
               </div>
               <input
                 id="driver-end-odo-input"
                 type="number"
-                placeholder={`> ${tripStatus.startOdo}`}
+                placeholder={`> ${Math.round(tripStatus.startOdo)}`}
                 value={endOdoInput}
                 onChange={(e) => setEndOdoInput(e.target.value)}
                 required
@@ -1494,19 +1494,19 @@ export const DriverWaybill: React.FC<DriverWaybillProps> = ({
             <div>
               <span className="text-[10px] text-slate-500 font-bold block uppercase">Эхлэх</span>
               <span className="text-xs sm:text-sm font-black text-slate-800 font-mono">
-                {isProvinceDriver && hasKmPin && !isKmUnlocked ? "•••••• км" : `${tripStatus.startOdo.toLocaleString()} км`}
+                {isProvinceDriver && hasKmPin && !isKmUnlocked ? "•••••• км" : `${Math.round(tripStatus.startOdo).toLocaleString()} км`}
               </span>
             </div>
             <div>
               <span className="text-[10px] text-slate-500 font-bold block uppercase">Төгсгөх</span>
               <span className="text-xs sm:text-sm font-black text-slate-800 font-mono">
-                {isProvinceDriver && hasKmPin && !isKmUnlocked ? "•••••• км" : `${tripStatus.endOdo?.toLocaleString()} км`}
+                {isProvinceDriver && hasKmPin && !isKmUnlocked ? "•••••• км" : `${tripStatus.endOdo ? `${Math.round(tripStatus.endOdo).toLocaleString()} км` : "—"}`}
               </span>
             </div>
             <div>
               <span className="text-[10px] text-emerald-600 font-bold block uppercase">Нийт км</span>
               <span className="text-xs sm:text-sm font-black text-emerald-700 font-mono">
-                {isProvinceDriver && hasKmPin && !isKmUnlocked ? "•••• км" : `${tripStatus.totalKm || (tripStatus.endOdo ? tripStatus.endOdo - tripStatus.startOdo : 0)} км`}
+                {isProvinceDriver && hasKmPin && !isKmUnlocked ? "•••• км" : `${Math.round(tripStatus.totalKm || (tripStatus.endOdo ? tripStatus.endOdo - tripStatus.startOdo : 0))} км`}
               </span>
             </div>
           </div>
