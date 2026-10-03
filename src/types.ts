@@ -241,10 +241,12 @@ export interface VehicleFineResult {
   displayPlate: string;
   count: number;
   amount: number;
-  paidCount?: number;
-  paidAmount?: number;
   unpaidCount?: number;
   unpaidAmount?: number;
+  paidCount?: number;
+  paidAmount?: number;
+  totalCount?: number;
+  totalAmount?: number;
   status: "ТӨЛӨӨГҮЙ" | "ЦЭВЭР" | "АЛДАА";
   rows: FineRecord[];
   error?: string;
@@ -259,12 +261,21 @@ export interface BulkFinesResult {
   errorCars: number;
   totalFineCount: number;
   totalAmount: number;
+  totalHistoryCount?: number;
+  totalHistoryAmount?: number;
   rows: {
     plate: string;
     displayPlate: string;
     count: number | string;
     total: number | string;
+    unpaidCount?: number;
+    unpaidAmount?: number;
+    paidCount?: number;
+    paidAmount?: number;
+    totalCount?: number;
+    totalAmount?: number;
     status: string;
+    checkedAt?: string;
     error?: string;
   }[];
   fines: FineRecord[];

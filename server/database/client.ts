@@ -59,6 +59,30 @@ export function getDatabase(dbFilePath = config.dbPath): DatabaseSync {
           db.exec(`ALTER TABLE daily_driver_assignments ADD COLUMN ${col};`);
         } catch (e) {}
       }
+
+      try {
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS driver_lifecycle_events (
+            id TEXT PRIMARY KEY,
+            driver_id TEXT NOT NULL,
+            driver_name TEXT NOT NULL,
+            driver_code TEXT,
+            phone TEXT,
+            vehicle TEXT,
+            division TEXT DEFAULT 'IMT',
+            event_type TEXT NOT NULL,
+            date TEXT NOT NULL,
+            reason TEXT,
+            sales_rep TEXT,
+            route_name TEXT,
+            notes TEXT,
+            created_at TEXT NOT NULL,
+            created_by TEXT
+          );
+          CREATE INDEX IF NOT EXISTS idx_dle_date ON driver_lifecycle_events(date);
+          CREATE INDEX IF NOT EXISTS idx_dle_type ON driver_lifecycle_events(event_type);
+        `);
+      } catch (e) {}
     }
 
     return db;

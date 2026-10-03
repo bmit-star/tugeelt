@@ -521,6 +521,16 @@ function loadDB(): DBState {
       console.error("[LOAD_DB] Failed to synchronize GPSBox waybills & odometers:", gpsSyncErr);
     }
 
+    // Sanitize any cached fine entries to ensure strict unpaid amounts and counts
+    if (loaded.finesCache && typeof loaded.finesCache === "object") {
+      Object.keys(loaded.finesCache).forEach((k) => {
+        const item = loaded.finesCache[k];
+        if (item && item.result) {
+          item.result = sanitizeFineResult(item.result, k, item.result.displayPlate || k);
+        }
+      });
+    }
+
     try {
       const jsonStr = JSON.stringify(loaded, null, 2);
       const tempFile = DB_FILE + ".tmp";
@@ -4023,10 +4033,12 @@ interface FineResult {
   displayPlate: string;
   count: number;
   amount: number;
-  paidCount?: number;
-  paidAmount?: number;
   unpaidCount?: number;
   unpaidAmount?: number;
+  paidCount?: number;
+  paidAmount?: number;
+  totalCount?: number;
+  totalAmount?: number;
   status: "ТӨЛӨӨГҮЙ" | "ЦЭВЭР" | "АЛДАА";
   rows: FineItem[];
   error?: string;
@@ -4132,11 +4144,23 @@ function getFineAmount(item: any): number {
 
 function isFinePaid(item: any): boolean {
   if (!item || typeof item !== "object") return false;
-  const booleanKeys = ["is_paid", "paid", "isPaid"];
+
+  // New penalties from erthub API (has violation_number and description without is_paid) are unpaid
+  if (item.violation_number && item.description && item.is_paid === undefined) {
+    return false;
+  }
+
+  const booleanKeys = ["is_paid", "paid", "isPaid", "is_pay", "isPay"];
   for (let i = 0; i < booleanKeys.length; i++) {
     const key = booleanKeys[i];
-    if (typeof item[key] === "boolean") {
-      return item[key] === true;
+    if (Object.prototype.hasOwnProperty.call(item, key)) {
+      const val = item[key];
+      if (val === true || val === 1 || val === "1" || String(val).toLowerCase() === "true") {
+        return true;
+      }
+      if (val === false || val === 0 || val === "0" || String(val).toLowerCase() === "false") {
+        return false;
+      }
     }
   }
 
@@ -4146,14 +4170,28 @@ function isFinePaid(item: any): boolean {
     item.payment_status ||
     item.paymentStatus ||
     item.paid_status ||
+    item.pay_status ||
     ""
-  ).toLowerCase();
+  ).toLowerCase().trim();
 
   if (!status) return false;
-  if (status.indexOf("төлөөгүй") !== -1 || status.indexOf("unpaid") !== -1 || status.indexOf("pending") !== -1) {
+  if (
+    status.includes("төлөөгүй") ||
+    status.includes("unpaid") ||
+    status.includes("pending") ||
+    status.includes("хүлээгдэж") ||
+    status.includes("шинэ")
+  ) {
     return false;
   }
-  if (status.indexOf("төлсөн") !== -1 || status.indexOf("paid") !== -1 || status.indexOf("complete") !== -1) {
+  if (
+    status.includes("төлсөн") ||
+    status.includes("paid") ||
+    status.includes("complete") ||
+    status.includes("success") ||
+    status.includes("төлөгдсөн") ||
+    status.includes("хаагдсан")
+  ) {
     return true;
   }
   return false;
@@ -4181,7 +4219,15 @@ function parseOnlyFine(json: any, plate: string, displayPlate: string): FineResu
     const newItems = Array.isArray(json.data.new?.data)
       ? json.data.new.data
       : (Array.isArray(json.data.new) ? json.data.new : []);
-    rawList = [...oldItems, ...newItems];
+
+    // Ensure new items default to unpaid if not specified
+    newItems.forEach((it: any) => {
+      if (it && typeof it === "object" && it.is_paid === undefined) {
+        it.is_paid = false;
+      }
+    });
+
+    rawList = [...newItems, ...oldItems];
   }
 
   // Fallback: if json itself contains nested fine arrays
@@ -4199,20 +4245,20 @@ function parseOnlyFine(json: any, plate: string, displayPlate: string): FineResu
     if (!fine || typeof fine !== "object" || Array.isArray(fine)) return;
 
     const no = String(
+      fine.violation_number ||
       fine.bar_code ||
       fine.barcode ||
-      fine.violation_number ||
       fine.decision_no ||
       fine.decisionNumber ||
       fine.number ||
       fine.id ||
       "—"
-    );
+    ).trim();
 
     const amount = getFineAmount(fine);
     const description = String(
-      fine.reason_type ||
       fine.description ||
+      fine.reason_type ||
       fine.reason ||
       fine.violation ||
       fine.type_name ||
@@ -4220,18 +4266,18 @@ function parseOnlyFine(json: any, plate: string, displayPlate: string): FineResu
     ).trim();
 
     const location = String(
-      fine.local_name ||
       fine.location ||
+      fine.local_name ||
       fine.address ||
       fine.camera_location ||
       "—"
     ).trim();
 
     const rawDate =
+      fine.date ||
       fine.pass_date ||
       fine.passed_date ||
       fine.violation_date ||
-      fine.date ||
       fine.created_at ||
       fine.createdDate ||
       "—";
@@ -4259,8 +4305,13 @@ function parseOnlyFine(json: any, plate: string, displayPlate: string): FineResu
     });
   });
 
-  // Sort by date descending (newest first)
-  rows.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  // Sort: Unpaid first, then newest date first
+  rows.sort((a, b) => {
+    if (a.isPaid !== b.isPaid) {
+      return a.isPaid ? 1 : -1;
+    }
+    return (b.date || "").localeCompare(a.date || "");
+  });
 
   const unpaidRows = rows.filter((r) => !r.isPaid);
   const paidRows = rows.filter((r) => r.isPaid);
@@ -4271,15 +4322,82 @@ function parseOnlyFine(json: any, plate: string, displayPlate: string): FineResu
   return {
     plate,
     displayPlate,
-    count: rows.length,
-    amount: totalAmount,
+    count: unpaidRows.length,      // Strict count of real unpaid fines
+    amount: unpaidAmount,          // Strict amount of real unpaid fines
     unpaidCount: unpaidRows.length,
     unpaidAmount,
     paidCount: paidRows.length,
     paidAmount,
+    totalCount: rows.length,       // Total history count
+    totalAmount,                   // Total history amount
     status: unpaidRows.length > 0 ? "ТӨЛӨӨГҮЙ" : "ЦЭВЭР",
     rows,
     checkedAt: new Date().toISOString(),
+  };
+}
+
+function sanitizeFineResult(res: any, cleanPlate: string, displayPlate: string): FineResult {
+  if (!res || !Array.isArray(res.rows)) {
+    return {
+      plate: cleanPlate,
+      displayPlate: displayPlate || cleanPlate,
+      count: 0,
+      amount: 0,
+      unpaidCount: 0,
+      unpaidAmount: 0,
+      paidCount: 0,
+      paidAmount: 0,
+      totalCount: 0,
+      totalAmount: 0,
+      status: "ЦЭВЭР",
+      rows: [],
+      checkedAt: res?.checkedAt || new Date().toISOString(),
+      error: res?.error,
+    };
+  }
+
+  const rows: FineItem[] = res.rows.map((r: any) => {
+    const isPaid = isFinePaid(r);
+    return {
+      ...r,
+      isPaid,
+      status: isPaid ? "ТӨЛСӨН" : "ТӨЛӨӨГҮЙ",
+      amount: Number(r.amount) || 0,
+    };
+  });
+
+  // Sort: Unpaid first, then newest date first
+  rows.sort((a, b) => {
+    if (a.isPaid !== b.isPaid) {
+      return a.isPaid ? 1 : -1;
+    }
+    return (b.date || "").localeCompare(a.date || "");
+  });
+
+  const unpaidRows = rows.filter((r) => !r.isPaid);
+  const paidRows = rows.filter((r) => r.isPaid);
+  const unpaidCount = unpaidRows.length;
+  const unpaidAmount = unpaidRows.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
+  const paidCount = paidRows.length;
+  const paidAmount = paidRows.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
+  const totalCount = rows.length;
+  const totalAmount = unpaidAmount + paidAmount;
+
+  return {
+    plate: cleanPlate,
+    displayPlate: displayPlate || res.displayPlate || cleanPlate,
+    count: unpaidCount,
+    amount: unpaidAmount,
+    unpaidCount,
+    unpaidAmount,
+    paidCount,
+    paidAmount,
+    totalCount,
+    totalAmount,
+    status: unpaidCount > 0 ? "ТӨЛӨӨГҮЙ" : "ЦЭВЭР",
+    rows,
+    error: res.error,
+    checkedAt: res.checkedAt || new Date().toISOString(),
   };
 }
 
@@ -4294,6 +4412,12 @@ async function fetchFinesForSinglePlate(plateInput: string, forceRefresh = false
       displayPlate: "",
       count: 0,
       amount: 0,
+      unpaidCount: 0,
+      unpaidAmount: 0,
+      paidCount: 0,
+      paidAmount: 0,
+      totalCount: 0,
+      totalAmount: 0,
       status: "ЦЭВЭР",
       rows: [],
       checkedAt: new Date().toISOString(),
@@ -4307,42 +4431,85 @@ async function fetchFinesForSinglePlate(plateInput: string, forceRefresh = false
 
   const cached = db.finesCache[cleanPlate];
   // 15 min cache TTL for high performance & reducing server load
-  if (!forceRefresh && cached && now - cached.timestamp < 15 * 60 * 1000) {
-    return cached.result;
+  if (!forceRefresh && cached && cached.result && now - cached.timestamp < 15 * 60 * 1000) {
+    return sanitizeFineResult(cached.result, cleanPlate, displayPlate);
   }
 
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 8000);
 
-    // Call erthub penalties endpoint without type:new (which previously caused timeouts and skipped penalties)
-    const response = await fetch("https://erthub.mn/api/vehicle", {
-      method: "POST",
-      headers: {
-        "Accept": "application/json, text/plain, */*",
-        "Content-Type": "application/json; charset=utf-8",
-        "Origin": "https://erthub.mn",
-        "Referer": "https://erthub.mn/",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-      },
-      body: JSON.stringify({
-        plate_number: cyrillicPlate,
-        operation: "penalties",
-      }),
-      signal: controller.signal,
-    });
+    // Call erthub penalties endpoint with required type: "new"
+    let response: any = null;
+    try {
+      response = await fetch("https://erthub.mn/api/vehicle", {
+        method: "POST",
+        headers: {
+          "Accept": "application/json, text/plain, */*",
+          "Content-Type": "application/json; charset=utf-8",
+          "Origin": "https://erthub.mn",
+          "Referer": "https://erthub.mn/",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        },
+        body: JSON.stringify({
+          plate_number: cyrillicPlate,
+          operation: "penalties",
+          type: "new",
+        }),
+        signal: controller.signal,
+      });
+    } catch (fetchErr: any) {
+      clearTimeout(timeoutId);
+      if (cached && cached.result) {
+        return sanitizeFineResult(cached.result, cleanPlate, displayPlate);
+      }
+      throw fetchErr;
+    }
 
     clearTimeout(timeoutId);
 
+    // Fallback: If erthub type:"new" returned error, attempt fallback call without type parameter
+    if (!response.ok && response.status !== 404) {
+      try {
+        const fallbackCtrl = new AbortController();
+        const fallbackTimeout = setTimeout(() => fallbackCtrl.abort(), 5000);
+        const fallbackRes = await fetch("https://erthub.mn/api/vehicle", {
+          method: "POST",
+          headers: {
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/json; charset=utf-8",
+            "Origin": "https://erthub.mn",
+            "Referer": "https://erthub.mn/",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          },
+          body: JSON.stringify({
+            plate_number: cyrillicPlate,
+            operation: "penalties",
+          }),
+          signal: fallbackCtrl.signal,
+        });
+        clearTimeout(fallbackTimeout);
+        if (fallbackRes.ok) {
+          response = fallbackRes;
+        }
+      } catch (e) {}
+    }
+
     if (!response.ok) {
       if (cached && cached.result) {
-        return cached.result;
+        return sanitizeFineResult(cached.result, cleanPlate, displayPlate);
       }
       return {
         plate: cleanPlate,
         displayPlate,
         count: 0,
         amount: 0,
+        unpaidCount: 0,
+        unpaidAmount: 0,
+        paidCount: 0,
+        paidAmount: 0,
+        totalCount: 0,
+        totalAmount: 0,
         status: "ЦЭВЭР",
         rows: [],
         error: `HTTP ${response.status}`,
@@ -4361,7 +4528,7 @@ async function fetchFinesForSinglePlate(plateInput: string, forceRefresh = false
   } catch (err: any) {
     console.warn(`Fines API warning for ${displayPlate} (${cyrillicPlate}):`, err.message);
     if (cached && cached.result) {
-      return cached.result;
+      return sanitizeFineResult(cached.result, cleanPlate, displayPlate);
     }
 
     const safeResult: FineResult = {
@@ -4369,6 +4536,12 @@ async function fetchFinesForSinglePlate(plateInput: string, forceRefresh = false
       displayPlate,
       count: 0,
       amount: 0,
+      unpaidCount: 0,
+      unpaidAmount: 0,
+      paidCount: 0,
+      paidAmount: 0,
+      totalCount: 0,
+      totalAmount: 0,
       status: "ЦЭВЭР",
       rows: [],
       error: err.name === "AbortError" ? "Хүсэлтийн хугацаа хэтэрлээ" : undefined,
@@ -4657,23 +4830,35 @@ app.get("/api/fines/summary", async (req: Request, res: Response) => {
       );
 
       results.forEach((res) => {
+        const unpaidCount = res.unpaidCount !== undefined ? res.unpaidCount : (res.status === "ТӨЛӨӨГҮЙ" ? res.count : 0);
+        const unpaidAmount = res.unpaidAmount !== undefined ? res.unpaidAmount : (res.status === "ТӨЛӨӨГҮЙ" ? res.amount : 0);
+        const hasUnpaid = unpaidCount > 0 || res.status === "ТӨЛӨӨГҮЙ";
+
         summary.push({
           plate: res.plate,
           displayPlate: res.displayPlate,
-          count: res.count,
-          total: res.amount,
-          status: res.status,
+          count: unpaidCount,
+          total: unpaidAmount,
+          unpaidCount,
+          unpaidAmount,
+          paidCount: res.paidCount || 0,
+          paidAmount: res.paidAmount || 0,
+          totalCount: res.totalCount !== undefined ? res.totalCount : (res.rows?.length || 0),
+          totalAmount: res.totalAmount !== undefined ? res.totalAmount : (res.rows?.reduce((s, r) => s + (Number(r.amount) || 0), 0) || 0),
+          status: hasUnpaid ? "ТӨЛӨӨГҮЙ" : "ЦЭВЭР",
           checkedAt: res.checkedAt,
           error: res.error,
         });
-        allFines = allFines.concat(res.rows);
+        allFines = allFines.concat(res.rows || []);
       });
     }
 
-    const fineCars = summary.filter((s) => s.status === "ТӨЛӨӨГҮЙ").length;
-    const cleanCars = summary.filter((s) => s.status === "ЦЭВЭР").length;
+    const unpaidFines = allFines.filter((f) => !f.isPaid && f.status !== "ТӨЛСӨН");
+    const fineCars = summary.filter((s) => s.status === "ТӨЛӨӨГҮЙ" && Number(s.count) > 0).length;
+    const cleanCars = summary.filter((s) => s.status === "ЦЭВЭР" || Number(s.count) === 0).length;
     const errorCars = summary.filter((s) => s.status === "АЛДАА").length;
-    const totalAmount = allFines.reduce((sum, f) => sum + Number(f.amount || 0), 0);
+    const totalAmount = unpaidFines.reduce((sum, f) => sum + Number(f.amount || 0), 0);
+    const totalHistoryAmount = allFines.reduce((sum, f) => sum + Number(f.amount || 0), 0);
 
     res.json({
       generatedAt: new Date().toISOString(),
@@ -4681,8 +4866,10 @@ app.get("/api/fines/summary", async (req: Request, res: Response) => {
       fineCars,
       cleanCars,
       errorCars,
-      totalFineCount: allFines.length,
+      totalFineCount: unpaidFines.length,
       totalAmount,
+      totalHistoryCount: allFines.length,
+      totalHistoryAmount,
       rows: summary,
       fines: allFines,
     });
@@ -4738,23 +4925,35 @@ app.post("/api/fines/check-bulk", async (req: Request, res: Response) => {
             error: res.error,
           });
         } else {
+          const unpaidCount = res.unpaidCount !== undefined ? res.unpaidCount : (res.status === "ТӨЛӨӨГҮЙ" ? res.count : 0);
+          const unpaidAmount = res.unpaidAmount !== undefined ? res.unpaidAmount : (res.status === "ТӨЛӨӨГҮЙ" ? res.amount : 0);
+          const hasUnpaid = unpaidCount > 0 || res.status === "ТӨЛӨӨГҮЙ";
+
           summary.push({
             plate: res.plate,
             displayPlate: res.displayPlate,
-            count: res.count,
-            total: res.amount,
-            status: res.status,
+            count: unpaidCount,
+            total: unpaidAmount,
+            unpaidCount,
+            unpaidAmount,
+            paidCount: res.paidCount || 0,
+            paidAmount: res.paidAmount || 0,
+            totalCount: res.totalCount !== undefined ? res.totalCount : (res.rows?.length || 0),
+            totalAmount: res.totalAmount !== undefined ? res.totalAmount : (res.rows?.reduce((s, r) => s + (Number(r.amount) || 0), 0) || 0),
+            status: hasUnpaid ? "ТӨЛӨӨГҮЙ" : "ЦЭВЭР",
             checkedAt: res.checkedAt,
           });
-          allFines = allFines.concat(res.rows);
+          allFines = allFines.concat(res.rows || []);
         }
       });
     }
 
-    const fineCars = summary.filter((s) => s.status === "ТӨЛӨӨГҮЙ").length;
-    const cleanCars = summary.filter((s) => s.status === "ЦЭВЭР").length;
+    const unpaidFines = allFines.filter((f) => !f.isPaid && f.status !== "ТӨЛСӨН");
+    const fineCars = summary.filter((s) => s.status === "ТӨЛӨӨГҮЙ" && Number(s.count) > 0).length;
+    const cleanCars = summary.filter((s) => s.status === "ЦЭВЭР" || Number(s.count) === 0).length;
     const errorCars = summary.filter((s) => s.status === "АЛДАА").length;
-    const totalAmount = allFines.reduce((sum, f) => sum + Number(f.amount || 0), 0);
+    const totalAmount = unpaidFines.reduce((sum, f) => sum + Number(f.amount || 0), 0);
+    const totalHistoryAmount = allFines.reduce((sum, f) => sum + Number(f.amount || 0), 0);
 
     res.json({
       generatedAt: new Date().toISOString(),
@@ -4762,8 +4961,10 @@ app.post("/api/fines/check-bulk", async (req: Request, res: Response) => {
       fineCars,
       cleanCars,
       errorCars,
-      totalFineCount: allFines.length,
+      totalFineCount: unpaidFines.length,
       totalAmount,
+      totalHistoryCount: allFines.length,
+      totalHistoryAmount,
       rows: summary,
       fines: allFines,
     });

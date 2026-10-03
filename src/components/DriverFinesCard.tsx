@@ -70,10 +70,18 @@ export const DriverFinesCard: React.FC<DriverFinesCardProps> = ({
     }
   }, [cleanVehicleNumber]);
 
-  const totalCount = fineResult?.count || 0;
-  const unpaidCount = fineResult?.unpaidCount !== undefined ? fineResult.unpaidCount : (fineResult?.status === "ТӨЛӨӨГҮЙ" ? fineResult.count : 0);
-  const paidCount = fineResult?.paidCount !== undefined ? fineResult.paidCount : (totalCount - unpaidCount);
-  const unpaidAmount = fineResult?.unpaidAmount !== undefined ? fineResult.unpaidAmount : (fineResult?.amount || 0);
+  const unpaidCount = fineResult?.unpaidCount !== undefined
+    ? Number(fineResult.unpaidCount)
+    : (fineResult?.status === "ТӨЛӨӨГҮЙ" ? Number(fineResult.count || 0) : 0);
+  const paidCount = fineResult?.paidCount !== undefined
+    ? Number(fineResult.paidCount)
+    : Math.max(0, (fineResult?.rows?.length || 0) - unpaidCount);
+  const totalCount = fineResult?.totalCount !== undefined
+    ? Number(fineResult.totalCount)
+    : (fineResult?.rows?.length || (unpaidCount + paidCount));
+  const unpaidAmount = fineResult?.unpaidAmount !== undefined
+    ? Number(fineResult.unpaidAmount)
+    : (unpaidCount > 0 ? Number(fineResult?.amount || 0) : 0);
 
   const hasUnpaidFines = unpaidCount > 0;
   const isClean = !hasUnpaidFines;
@@ -119,7 +127,7 @@ export const DriverFinesCard: React.FC<DriverFinesCardProps> = ({
               </h3>
               {totalCount > 0 && (
                 <span className="text-[11px] font-bold text-slate-400">
-                  (Нийт {totalCount} бүртгэл)
+                  ({unpaidCount > 0 ? `Төлөөгүй: ${unpaidCount}` : `Төлөгдсөн: ${paidCount}`})
                 </span>
               )}
             </div>
@@ -185,8 +193,8 @@ export const DriverFinesCard: React.FC<DriverFinesCardProps> = ({
                     </span>
                   </div>
                   <p className="text-xs text-emerald-700 mt-0.5 font-medium">
-                    {totalCount > 0
-                      ? `Энэ машинд бүртгэгдсэн өмнөх бүх (${totalCount}) торгууль бүрэн төлөгдсөн байна.`
+                    {paidCount > 0
+                      ? `Энэ машинд бүртгэгдсэн өмнөх бүх (${paidCount}) торгууль бүрэн төлөгдсөн байна.`
                       : "Тээврийн хэрэгсэлд бүртгэлтэй торгуулийн өр төлбөр байхгүй байна."}
                   </p>
                 </div>
@@ -198,14 +206,14 @@ export const DriverFinesCard: React.FC<DriverFinesCardProps> = ({
             </div>
 
             {/* If there are historical paid fines, show toggle to view history */}
-            {totalCount > 0 && (
+            {paidCount > 0 && (
               <div className="flex items-center justify-between pt-1 text-xs">
                 <button
                   onClick={() => setIsExpanded(!isExpanded)}
                   className="text-[#0878bd] hover:underline font-bold flex items-center gap-1 cursor-pointer"
                 >
                   <FileText className="w-3.5 h-3.5" />
-                  <span>Өмнө төлөгдсөн түүх харах ({totalCount} торгууль)</span>
+                  <span>Өмнө төлөгдсөн түүх харах ({paidCount} торгууль)</span>
                   {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
                 </button>
               </div>

@@ -326,4 +326,26 @@ CREATE INDEX IF NOT EXISTS idx_dcf_date ON driver_change_fines(business_date);
 CREATE INDEX IF NOT EXISTS idx_dcf_vehicle ON driver_change_fines(vehicle_plate);
 CREATE INDEX IF NOT EXISTS idx_dcf_division ON driver_change_fines(vehicle_division);
 CREATE INDEX IF NOT EXISTS idx_dcf_driver ON driver_change_fines(actual_driver_id);
+
+-- 19. Driver Lifecycle Events (New Registrations & Resignations)
+CREATE TABLE IF NOT EXISTS driver_lifecycle_events (
+  id TEXT PRIMARY KEY,
+  driver_id TEXT NOT NULL,
+  driver_name TEXT NOT NULL,
+  driver_code TEXT,
+  phone TEXT,
+  vehicle TEXT,
+  division TEXT DEFAULT 'IMT',
+  event_type TEXT NOT NULL, -- 'registered' | 'resigned'
+  date TEXT NOT NULL, -- YYYY-MM-DD
+  reason TEXT,
+  sales_rep TEXT,
+  route_name TEXT,
+  notes TEXT,
+  created_at TEXT NOT NULL,
+  created_by TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_dle_date ON driver_lifecycle_events(date);
+CREATE INDEX IF NOT EXISTS idx_dle_type ON driver_lifecycle_events(event_type);
+CREATE INDEX IF NOT EXISTS idx_dle_driver ON driver_lifecycle_events(driver_id);
 `;

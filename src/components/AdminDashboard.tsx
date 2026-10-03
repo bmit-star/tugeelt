@@ -1667,8 +1667,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 className="py-2 px-3 rounded-xl border border-slate-300 text-xs sm:text-sm font-semibold bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-[#0878bd]"
               >
                 <option value="all">Бүх машин ({drivers.length})</option>
-                <option value="fines">⚠️ Зөвхөн торгуультай ({bulkFines?.fineCars || 0})</option>
-                <option value="clean">✅ Зөвхөн цэвэр ({bulkFines?.cleanCars || 0})</option>
+                <option value="fines">⚠️ Төлөөгүй торгуультай ({bulkFines?.fineCars || 0})</option>
+                <option value="clean">✅ Зөрчилгүй / Төлөгдсөн ({bulkFines?.cleanCars || 0})</option>
               </select>
             </div>
 
@@ -1730,7 +1730,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       const fineRow = bulkFines?.rows?.find(
                         (r) => r.plate.toUpperCase() === cleanVeh || r.displayPlate.toUpperCase() === cleanVeh
                       );
-                      const isUnpaid = fineRow && (fineRow.status === "ТӨЛӨӨГҮЙ" || (typeof fineRow.count === "number" && fineRow.count > 0));
+                      const isUnpaid = fineRow && (fineRow.status === "ТӨЛӨӨГҮЙ" || (Number(fineRow.unpaidCount ?? fineRow.count) > 0 && fineRow.status !== "ЦЭВЭР"));
                       if (fineFilter === "fines") return isUnpaid;
                       if (fineFilter === "clean") return !isUnpaid;
                       return true;
@@ -1740,19 +1740,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       const fineRow = bulkFines?.rows?.find(
                         (r) => r.plate.toUpperCase() === cleanVeh || r.displayPlate.toUpperCase() === cleanVeh
                       );
-                      const hasFine = fineRow && (fineRow.status === "ТӨЛӨӨГҮЙ" || (typeof fineRow.count === "number" && fineRow.count > 0));
-                      const fineCount = fineRow ? fineRow.count : 0;
-                      const fineTotal = fineRow ? fineRow.total : 0;
+                      const isUnpaid = fineRow && (fineRow.status === "ТӨЛӨӨГҮЙ" || (Number(fineRow.unpaidCount ?? fineRow.count) > 0 && fineRow.status !== "ЦЭВЭР"));
+                      const hasFine = isUnpaid;
+                      const unpaidCount = fineRow ? (fineRow.unpaidCount !== undefined ? Number(fineRow.unpaidCount) : (hasFine ? Number(fineRow.count || 0) : 0)) : 0;
+                      const unpaidTotal = fineRow ? (fineRow.unpaidAmount !== undefined ? Number(fineRow.unpaidAmount) : (hasFine ? Number(fineRow.total || 0) : 0)) : 0;
+                      const paidCount = fineRow?.paidCount !== undefined ? Number(fineRow.paidCount) : 0;
                       const isExpanded = expandedFinePlate === cleanVeh;
 
                       // Vehicle specific fine violation items
                       const vehicleFines = bulkFines?.fines?.filter(
                         (f) => f.plate.toUpperCase() === cleanVeh || f.displayPlate.toUpperCase() === cleanVeh
                       ) || [];
+                      const unpaidVehicleFines = vehicleFines.filter((f) => !f.isPaid && f.status !== "ТӨЛСӨН");
+                      const paidVehicleFines = vehicleFines.filter((f) => f.isPaid || f.status === "ТӨЛСӨН");
 
                       return (
                         <React.Fragment key={driver.id}>
-                          <tr className={`hover:bg-slate-50/80 transition-colors ${hasFine ? "bg-amber-50/20" : ""}`}>
+                          <tr className={`hover:bg-slate-50/80 transition-colors ${hasFine ? "bg-rose-50/30" : ""}`}>
                             <td className="p-3 pl-4">
                               <div className="flex items-center gap-2">
                                 <span className="w-8 h-8 rounded-lg bg-sky-50 text-[#0878bd] font-black flex items-center justify-center text-xs border border-sky-100 flex-shrink-0">
@@ -1777,22 +1781,29 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                   Шалгаж байна...
                                 </span>
                               ) : hasFine ? (
-                                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-black bg-amber-100 text-amber-900 border border-amber-300">
-                                  <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
-                                  ТӨЛӨӨГҮЙ
+                                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-black bg-rose-100 text-rose-800 border border-rose-300">
+                                  <AlertTriangle className="w-3.5 h-3.5 text-rose-600" />
+                                  ТӨЛӨӨГҮЙ ({unpaidCount})
                                 </span>
                               ) : (
-                                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
-                                  ЦЭВЭР
-                                </span>
+                                <div className="inline-flex flex-col items-start gap-0.5">
+                                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
+                                    ЦЭВЭР
+                                  </span>
+                                  {paidCount > 0 && (
+                                    <span className="text-[10px] text-slate-400 font-medium ml-1">
+                                      ({paidCount} төлөгдсөн)
+                                    </span>
+                                  )}
+                                </div>
                               )}
                             </td>
 
                             <td className="p-3 text-center font-bold">
                               {hasFine ? (
-                                <span className="px-2 py-0.5 rounded-full bg-amber-500 text-white font-black text-xs">
-                                  {fineCount}
+                                <span className="px-2 py-0.5 rounded-full bg-rose-600 text-white font-black text-xs shadow-2xs">
+                                  {unpaidCount}
                                 </span>
                               ) : (
                                 <span className="text-slate-400 font-normal">0</span>
@@ -1802,7 +1813,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                             <td className="p-3 text-right">
                               {hasFine ? (
                                 <span className="text-sm font-black text-rose-600 bg-rose-50 px-2 py-0.5 rounded-md border border-rose-200">
-                                  {Number(fineTotal).toLocaleString()} ₮
+                                  {Number(unpaidTotal).toLocaleString()} ₮
                                 </span>
                               ) : (
                                 <span className="text-emerald-700 font-bold">0 ₮</span>
@@ -1810,8 +1821,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                             </td>
 
                             <td className="p-3 text-slate-500 text-[11px]">
-                              {bulkFines?.generatedAt
-                                ? `${new Date(bulkFines.generatedAt).toLocaleDateString()} ${new Date(bulkFines.generatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+                              {fineRow?.checkedAt || bulkFines?.generatedAt
+                                ? `${new Date(fineRow?.checkedAt || bulkFines!.generatedAt).toLocaleDateString()} ${new Date(fineRow?.checkedAt || bulkFines!.generatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
                                 : "Бэлэн"}
                             </td>
 
@@ -1819,9 +1830,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                               {vehicleFines.length > 0 ? (
                                 <button
                                   onClick={() => setExpandedFinePlate(isExpanded ? null : cleanVeh)}
-                                  className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs flex items-center gap-1 mx-auto transition-colors cursor-pointer"
+                                  className={`px-2.5 py-1 rounded-lg font-bold text-xs flex items-center gap-1 mx-auto transition-colors cursor-pointer ${
+                                    hasFine
+                                      ? "bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200"
+                                      : "bg-slate-100 hover:bg-slate-200 text-slate-700"
+                                  }`}
                                 >
-                                  <span>{isExpanded ? "Хураах" : "Зөрчил харах"}</span>
+                                  <span>{isExpanded ? "Хураах" : hasFine ? `Төлөөгүй зөрчил (${unpaidCount})` : `Түүх харах (${vehicleFines.length})`}</span>
                                   {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
                                 </button>
                               ) : (
@@ -1834,48 +1849,106 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           {isExpanded && vehicleFines.length > 0 && (
                             <tr className="bg-slate-50/90 border-b border-slate-200">
                               <td colSpan={7} className="p-4">
-                                <div className="bg-white rounded-xl border border-slate-200 p-3.5 space-y-2">
-                                  <div className="flex items-center justify-between pb-2 border-b border-slate-100 text-xs font-bold text-slate-700">
-                                    <span className="flex items-center gap-1.5 text-[#0878bd]">
-                                      <FileText className="w-4 h-4" />
-                                      {driver.vehicle} машины бүртгэгдсэн зөрчлүүд ({vehicleFines.length})
-                                    </span>
-                                    <span className="text-rose-600 font-black">
-                                      Нийт: {Number(fineTotal).toLocaleString()} ₮
-                                    </span>
-                                  </div>
-
-                                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                                    {vehicleFines.map((vFine: FineRecord, vIdx: number) => (
-                                      <div
-                                        key={`${vFine.no}-${vIdx}`}
-                                        className="p-3 bg-slate-50 rounded-lg border border-slate-200 text-xs space-y-1"
-                                      >
-                                        <div className="flex items-center justify-between font-bold">
-                                          <span className="font-mono text-slate-700">№ {vFine.no}</span>
-                                          <span className="text-rose-600 font-black">
-                                            {Number(vFine.amount).toLocaleString()} ₮
-                                          </span>
-                                        </div>
-                                        <div className="text-slate-800 font-medium flex items-start gap-1">
-                                          <Info className="w-3.5 h-3.5 text-slate-400 flex-shrink-0 mt-0.5" />
-                                          <span>{vFine.violation}</span>
-                                        </div>
-                                        <div className="flex items-center justify-between text-[11px] text-slate-500 pt-1 border-t border-slate-200/60">
-                                          <span className="flex items-center gap-1">
-                                            <Clock className="w-3 h-3" />
-                                            {vFine.date}
-                                          </span>
-                                          {vFine.location && vFine.location !== "—" && (
-                                            <span className="flex items-center gap-1 truncate max-w-[200px]" title={vFine.location}>
-                                              <MapPin className="w-3 h-3" />
-                                              {vFine.location}
-                                            </span>
-                                          )}
-                                        </div>
+                                <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-4">
+                                  {/* Unpaid violations section */}
+                                  {unpaidVehicleFines.length > 0 && (
+                                    <div className="space-y-2">
+                                      <div className="flex items-center justify-between pb-2 border-b border-rose-100 text-xs font-bold text-rose-800">
+                                        <span className="flex items-center gap-1.5 text-rose-700">
+                                          <AlertTriangle className="w-4 h-4 text-rose-600" />
+                                          {driver.vehicle} — Төлөгдөөгүй зөрчлүүд ({unpaidVehicleFines.length})
+                                        </span>
+                                        <span className="text-rose-600 font-black">
+                                          Төлөх дүн: {Number(unpaidTotal).toLocaleString()} ₮
+                                        </span>
                                       </div>
-                                    ))}
-                                  </div>
+
+                                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                                        {unpaidVehicleFines.map((vFine: FineRecord, vIdx: number) => (
+                                          <div
+                                            key={`unpaid-${vFine.no}-${vIdx}`}
+                                            className="p-3 bg-rose-50/50 rounded-xl border border-rose-200 text-xs space-y-1.5 shadow-2xs"
+                                          >
+                                            <div className="flex items-center justify-between font-bold">
+                                              <span className="font-mono text-slate-800 font-bold">№ {vFine.no}</span>
+                                              <div className="flex items-center gap-1.5">
+                                                <span className="px-1.5 py-0.5 rounded text-[10px] font-black bg-rose-600 text-white">ТӨЛӨӨГҮЙ</span>
+                                                <span className="text-rose-600 font-black">
+                                                  {Number(vFine.amount).toLocaleString()} ₮
+                                                </span>
+                                              </div>
+                                            </div>
+                                            <div className="text-slate-800 font-medium flex items-start gap-1">
+                                              <Info className="w-3.5 h-3.5 text-rose-500 flex-shrink-0 mt-0.5" />
+                                              <span>{vFine.violation}</span>
+                                            </div>
+                                            <div className="flex items-center justify-between text-[11px] text-slate-500 pt-1 border-t border-rose-200/60">
+                                              <span className="flex items-center gap-1">
+                                                <Clock className="w-3 h-3" />
+                                                {vFine.date}
+                                              </span>
+                                              {vFine.location && vFine.location !== "—" && (
+                                                <span className="flex items-center gap-1 truncate max-w-[200px]" title={vFine.location}>
+                                                  <MapPin className="w-3 h-3" />
+                                                  {vFine.location}
+                                                </span>
+                                              )}
+                                            </div>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  {/* Paid historical violations section */}
+                                  {paidVehicleFines.length > 0 && (
+                                    <div className={`space-y-2 ${unpaidVehicleFines.length > 0 ? "pt-3 border-t border-slate-100" : ""}`}>
+                                      <div className="flex items-center justify-between pb-1.5 border-b border-slate-100 text-xs font-bold text-slate-600">
+                                        <span className="flex items-center gap-1.5 text-emerald-700">
+                                          <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                                          Өмнө төлөгдсөн зөрчлийн түүх ({paidVehicleFines.length})
+                                        </span>
+                                        <span className="text-slate-400 font-medium text-[11px]">
+                                          Нийт төлсөн: {paidVehicleFines.reduce((s, f) => s + (Number(f.amount) || 0), 0).toLocaleString()} ₮
+                                        </span>
+                                      </div>
+
+                                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                                        {paidVehicleFines.map((vFine: FineRecord, vIdx: number) => (
+                                          <div
+                                            key={`paid-${vFine.no}-${vIdx}`}
+                                            className="p-3 bg-slate-50/80 rounded-xl border border-slate-200 text-xs space-y-1.5 opacity-80"
+                                          >
+                                            <div className="flex items-center justify-between font-bold">
+                                              <span className="font-mono text-slate-600">№ {vFine.no}</span>
+                                              <div className="flex items-center gap-1.5">
+                                                <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-700 border border-emerald-200">ТӨЛСӨН</span>
+                                                <span className="text-slate-700 font-bold">
+                                                  {Number(vFine.amount).toLocaleString()} ₮
+                                                </span>
+                                              </div>
+                                            </div>
+                                            <div className="text-slate-700 font-medium flex items-start gap-1">
+                                              <Info className="w-3.5 h-3.5 text-slate-400 flex-shrink-0 mt-0.5" />
+                                              <span>{vFine.violation}</span>
+                                            </div>
+                                            <div className="flex items-center justify-between text-[11px] text-slate-400 pt-1 border-t border-slate-200/60">
+                                              <span className="flex items-center gap-1">
+                                                <Clock className="w-3 h-3" />
+                                                {vFine.date}
+                                              </span>
+                                              {vFine.location && vFine.location !== "—" && (
+                                                <span className="flex items-center gap-1 truncate max-w-[200px]" title={vFine.location}>
+                                                  <MapPin className="w-3 h-3" />
+                                                  {vFine.location}
+                                                </span>
+                                              )}
+                                            </div>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
                                 </div>
                               </td>
                             </tr>
