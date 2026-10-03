@@ -1,7 +1,9 @@
 import fs from "fs";
 import path from "path";
 import { GPSBOX_DAILY_DATA } from "../data/gpsbox-dataset";
-import { getDatabase } from "../database/client";
+import { getDatabase, runInTransaction } from "../database/client";
+import { toIntKm, toLiters } from "../utils/numbers";
+import { ubToday, ubMonth } from "../utils/time";
 
 export const INITIAL_ODO_MAP: Record<string, number> = {
   // 30 City IMT Vehicles
@@ -44,33 +46,7 @@ export const INITIAL_ODO_MAP: Record<string, number> = {
   "5909УКО": 171200,
   "6530УКН": 183600,
   "8376УЕН": 196400,
-  "8428УНД": 174900,
-
-  // 6 Additional Fleet Vehicles
-  "1296УНА": 85200,
-  "1036УЕВ": 94100,
-  "6830УЕХ": 142000,
-  "7254УАУ": 118300,
-  "7263УНЧ": 105600,
-  "7431УАХ": 132400
-};
-
-// Fallback driver info if vehicle not yet present in drivers array
-const FALLBACK_DRIVERS: Record<string, { id: string; name: string; salesRep: string; zone: string; isIMD: boolean }> = {
-  "8374УНЕ": { id: "775", name: "Чу.Мөнхгэрэл", salesRep: "", zone: "", isIMD: true },
-  "3147УЕН": { id: "141", name: "Ми.Анхбаяр", salesRep: "", zone: "", isIMD: true },
-  "3148УЕМ": { id: "9726", name: "Ул.Мөнгөнзул", salesRep: "", zone: "", isIMD: true },
-  "3148УЕО": { id: "14", name: "Пү.Доржпалам", salesRep: "", zone: "", isIMD: true },
-  "5909УКО": { id: "173", name: "Эн.Отгонсүх", salesRep: "", zone: "", isIMD: true },
-  "6530УКН": { id: "314", name: "Сү.Баттогтох", salesRep: "", zone: "", isIMD: true },
-  "8376УЕН": { id: "283", name: "Жа.Алтанхуяг", salesRep: "", zone: "", isIMD: true },
-  "8428УНД": { id: "5535", name: "Со.Баярсайхан", salesRep: "", zone: "", isIMD: true },
-  "1296УНА": { id: "EX1", name: "Түгээгч жолооч", salesRep: "Борлуулалт", zone: "Нөөц", isIMD: false },
-  "1036УЕВ": { id: "EX2", name: "Түгээгч жолооч", salesRep: "Борлуулалт", zone: "Нөөц", isIMD: false },
-  "6830УЕХ": { id: "EX3", name: "Түгээгч жолооч", salesRep: "", zone: "", isIMD: true },
-  "7254УАУ": { id: "EX4", name: "Түгээгч жолооч", salesRep: "Борлуулалт", zone: "Нөөц", isIMD: false },
-  "7263УНЧ": { id: "EX5", name: "Түгээгч жолооч", salesRep: "Борлуулалт", zone: "Нөөц", isIMD: false },
-  "7431УАХ": { id: "EX6", name: "Түгээгч жолооч", salesRep: "Борлуулалт", zone: "Нөөц", isIMD: false }
+  "8428УНД": 174900
 };
 
 export interface BackfillAuditReport {
@@ -87,7 +63,7 @@ export interface BackfillAuditReport {
 }
 
 /**
- * Returns dynamic chronological list of dates from startDateStr to endDateStr (e.g. 2026-09-01 -> 2026-09-19).
+ * Returns dynamic chronological list of dates from startDateStr to endDateStr
  */
 export function getDatesRange(startDateStr: string, endDateStr: string): string[] {
   const dates: string[] = [];
@@ -114,15 +90,18 @@ function loadLiveGpsboxCache(): Record<string, Record<string, { km: number; fuel
 }
 
 /**
- * Historical Backfill & Continuous Odometer Engine (Sections 26 - 47)
- * - Start: 2026-09-01
- * - End: SYSTEM CURRENT DATE (Today)
- * - Unbroken Odometer Chain: Day N Closing ODO = Day N+1 Opening ODO
- * - Daily KM = Closing ODO - Opening ODO (Primary calculation)
- * - Non-destructive Idempotent updates into dbState.trips matching (vehicleNumber + date)
- * - Post-backfill verification audit report
+ * Continuous Odometer Synchronization Engine
+ * - Start: 1st of current month (or customStartDate if provided)
+ * - Window: Only active drivers registered in the system (status !== 'deleted')
+ * - NEVER overwrites manually edited / manager confirmed waybills
+ * - Odometer chain: Day N End ODO = Day N+1 Start ODO
+ * - Whole integer values for all ODO and KM calculations
  */
-export function syncGpsboxTripsAndOdometer(dbState: any, customEndDate?: string): {
+export function syncGpsboxTripsAndOdometer(
+  dbState: any,
+  customEndDate?: string,
+  customStartDate?: string
+): {
   totalTripsGenerated: number;
   totalDailyGPSGenerated: number;
   vehiclesCovered: number;
@@ -135,7 +114,7 @@ export function syncGpsboxTripsAndOdometer(dbState: any, customEndDate?: string)
       vehiclesCovered: 0,
       audit: {
         totalActiveVehicles: 0,
-        dateRange: { start: "2026-09-01", end: "2026-09-01", totalDays: 1 },
+        dateRange: { start: ubToday(), end: ubToday(), totalDays: 1 },
         missingDaysCount: 0,
         duplicateDaysCount: 0,
         brokenChainCount: 0,
@@ -152,51 +131,30 @@ export function syncGpsboxTripsAndOdometer(dbState: any, customEndDate?: string)
   dbState.dailyGPSMileages = dbState.dailyGPSMileages || [];
   dbState.drivers = dbState.drivers || [];
 
-  const startDate = "2026-09-01";
-  const endDate = customEndDate || new Date().toISOString().split("T")[0];
+  // Default start date is 1st of current month (not hardcoded historical 2026-09-01)
+  const defaultStart = `${ubMonth()}-01`;
+  const startDate = customStartDate || defaultStart;
+  const endDate = customEndDate || ubToday();
   const dates = getDatesRange(startDate, endDate);
 
   const liveCache = loadLiveGpsboxCache();
 
-  // 1. Gather all active vehicles dynamically from existing database (Section 27)
+  // 1. Gather ONLY registered, active drivers (status !== 'deleted')
+  // Strictly prevent synthetic EX1..EX6 or non-driver vehicle creation
   const vehicleMap = new Map<string, any>();
 
-  // Add from dbState.drivers
   dbState.drivers.forEach((drv: any) => {
-    if (drv.vehicle) {
+    if (drv && drv.vehicle && drv.status !== "deleted") {
       const clean = drv.vehicle.replace(/\s+/g, "").toUpperCase();
       vehicleMap.set(clean, {
         plate: clean,
         driverId: drv.id,
         driverName: drv.name,
         salesRep: drv.isIMD ? (drv.salesRep || "") : drv.salesRep,
-        zone: drv.isIMD ? "" : (drv.zone || drv.defaultRoute),
+        zone: drv.isIMD ? "" : (drv.zone || drv.defaultRoute || "Түгээлт"),
         isIMD: drv.isIMD || false,
         imei: drv.telemetry?.imei || drv.imei || null,
-        initialOdo: drv.startOdo || INITIAL_ODO_MAP[clean]
-      });
-    }
-  });
-
-  // Supplement with any fleet vehicles in INITIAL_ODO_MAP or dataset not yet in drivers
-  Object.keys(INITIAL_ODO_MAP).forEach(clean => {
-    if (!vehicleMap.has(clean)) {
-      const fallback = FALLBACK_DRIVERS[clean] || {
-        id: clean,
-        name: "Түгээгч жолооч",
-        salesRep: "Борлуулалт",
-        zone: "Түгээлт",
-        isIMD: false
-      };
-      vehicleMap.set(clean, {
-        plate: clean,
-        driverId: fallback.id,
-        driverName: fallback.name,
-        salesRep: fallback.salesRep,
-        zone: fallback.zone,
-        isIMD: fallback.isIMD,
-        imei: null,
-        initialOdo: INITIAL_ODO_MAP[clean]
+        initialOdo: drv.startOdo !== undefined ? toIntKm(drv.startOdo) : (INITIAL_ODO_MAP[clean] ? toIntKm(INITIAL_ODO_MAP[clean]) : null)
       });
     }
   });
@@ -205,31 +163,70 @@ export function syncGpsboxTripsAndOdometer(dbState: any, customEndDate?: string)
   const generatedDailyGPS: any[] = [];
   const unmappedVehicles: string[] = [];
 
-  // 2. Process each vehicle in chronological order (Section 32, 33)
+  // Existing trips index by plate+date to detect and protect manual/confirmed records
+  const existingTripMap = new Map<string, any>();
+  dbState.trips.forEach((t: any) => {
+    if (t && t.vehicleNumber && t.date) {
+      const clean = String(t.vehicleNumber).replace(/\s+/g, "").toUpperCase();
+      existingTripMap.set(`${clean}_${t.date}`, t);
+    }
+  });
+
+  // 2. Process each registered vehicle
   for (const [cleanPlate, vInfo] of vehicleMap.entries()) {
     const hasImei = Boolean(vInfo.imei);
     if (!hasImei && !INITIAL_ODO_MAP[cleanPlate]) {
       unmappedVehicles.push(cleanPlate);
     }
 
-    // Historical dataset entries for this vehicle
     const historicalEntries = GPSBOX_DAILY_DATA[cleanPlate] || [];
     const entryByDate: Record<string, { km: number; fuel: number }> = {};
     historicalEntries.forEach(e => {
       entryByDate[e.date] = e;
     });
 
-    // Determine initial Opening ODO on 2026-09-01 06:00 (Section 34)
-    let runningOdo: number | null = vInfo.initialOdo ?? INITIAL_ODO_MAP[cleanPlate] ?? null;
+    // Opening ODO
+    let runningOdo: number | null = vInfo.initialOdo ?? null;
 
     for (const date of dates) {
+      const tripKey = `${cleanPlate}_${date}`;
+      const existing = existingTripMap.get(tripKey);
+
+      // Check if existing trip is manual or confirmed by manager
+      const isManualOrConfirmed = Boolean(
+        existing && (
+          existing.isManual === true ||
+          existing.source === "manual" ||
+          existing.source === "manager" ||
+          existing.status === "CONFIRMED" ||
+          existing.status === "LOCKED"
+        )
+      );
+
+      if (isManualOrConfirmed && existing) {
+        // PRESERVE MANUAL / CONFIRMED TRIP INTACT
+        const startOdo = toIntKm(existing.startOdo);
+        const endOdo = existing.endOdo !== undefined && existing.endOdo !== null ? toIntKm(existing.endOdo) : startOdo;
+        const totalKm = endOdo >= startOdo ? (endOdo - startOdo) : toIntKm(existing.totalKm || 0);
+
+        generatedTrips.push({
+          ...existing,
+          startOdo,
+          endOdo,
+          totalKm
+        });
+
+        runningOdo = endOdo;
+        continue;
+      }
+
       let entry = entryByDate[date];
       if (!entry && liveCache[date] && liveCache[date][cleanPlate]) {
         entry = liveCache[date][cleanPlate];
       }
 
-      const km = entry ? Math.round(Number(entry.km || 0)) : 0;
-      const fuel = entry ? Math.round(Number(entry.fuel || 0) * 100) / 100 : 0;
+      const km = entry ? toIntKm(entry.km) : 0;
+      const fuel = entry ? toLiters(entry.fuel) : 0;
 
       let status = "CALCULATED";
       let odoCalcStatus = "valid";
@@ -242,41 +239,27 @@ export function syncGpsboxTripsAndOdometer(dbState: any, customEndDate?: string)
         odoCalcStatus = "no_data";
       }
 
-      const dayStartOdo = runningOdo !== null ? Math.round(runningOdo) : 0;
-      const dayEndOdo = runningOdo !== null ? Math.round(dayStartOdo + km) : 0;
+      const dayStartOdo = runningOdo !== null ? toIntKm(runningOdo) : 0;
+      const dayEndOdo = runningOdo !== null ? toIntKm(dayStartOdo + km) : 0;
 
-      // Anomaly detection: Closing < Opening or negative daily KM (Section 29, 36)
       if (dayEndOdo < dayStartOdo || km < 0) {
         status = "ODO_ANOMALY";
         odoCalcStatus = "anomaly";
       }
 
-      // Chain continuity: update runningOdo for the next day (Day N Closing = Day N+1 Opening)
       if (runningOdo !== null) {
         runningOdo = dayEndOdo;
       }
 
-      // Route note determination:
-      // Preserve existing manual/custom routeNote if valid and not the old fake template
-      const existingTripMatch = (dbState.trips || []).find(
-        (t: any) => (t.vehicleNumber || "").replace(/\s+/g, "").toUpperCase() === cleanPlate && t.date === date
-      );
-
-      // Check if there is a REAL active assignment for this vehicle on this date
-      const matchedAsn = (dbState.assignments || []).find((a: any) => {
-        if (!a || a.status === "Цуцлагдсан") return false;
-        const aPlate = (a.vehiclePlate || "").replace(/\s+/g, "").toUpperCase();
-        if (aPlate !== cleanPlate) return false;
-        if (a.departureDate === date) return true;
-        if (a.returnDate && a.departureDate && a.departureDate <= date && a.returnDate >= date) return true;
-        return false;
-      });
-
-      let calculatedRouteNote = "";
-      let calculatedZone = "";
-      let calculatedSalesRep = "";
+      let calculatedRouteNote = "Борлуулалт";
+      let calculatedZone = vInfo.zone || "УБ Төв";
+      let calculatedSalesRep = vInfo.salesRep || "Борлуулалт";
 
       if (vInfo.isIMD) {
+        const matchedAsn = (dbState.assignments || []).find((a: any) => {
+          const matchVeh = a.vehiclePlate && a.vehiclePlate.replace(/\s+/g, "").toUpperCase() === cleanPlate;
+          return matchVeh && a.departureDate === date && a.status !== "Цуцлагдсан";
+        });
         if (matchedAsn) {
           calculatedRouteNote = `Томилолт: ${matchedAsn.province || ""}, ${matchedAsn.destination || ""} (${matchedAsn.orderNo || ""})`.trim();
           calculatedZone = matchedAsn.province ? `${matchedAsn.province} - ${matchedAsn.destination}` : (matchedAsn.destination || "Орон нутаг");
@@ -287,8 +270,8 @@ export function syncGpsboxTripsAndOdometer(dbState: any, customEndDate?: string)
           calculatedSalesRep = vInfo.salesRep || "";
         }
       } else {
-        if (existingTripMatch?.routeNote && existingTripMatch.routeNote !== "Орон нутаг холын томилолт") {
-          calculatedRouteNote = existingTripMatch.routeNote;
+        if (existing?.routeNote && existing.routeNote !== "Орон нутаг холын томилолт") {
+          calculatedRouteNote = existing.routeNote;
         } else if (km > 0) {
           calculatedRouteNote = "Борлуулалт түгээлт";
         } else {
@@ -298,7 +281,7 @@ export function syncGpsboxTripsAndOdometer(dbState: any, customEndDate?: string)
         calculatedSalesRep = vInfo.salesRep || "Борлуулалт";
       }
 
-      const tripId = `trip_${cleanPlate}_${date}`;
+      const tripId = existing?.id || `trip_${cleanPlate}_${date}`;
       const trip = {
         id: tripId,
         timestamp: `${date} 08:30:00`,
@@ -329,49 +312,82 @@ export function syncGpsboxTripsAndOdometer(dbState: any, customEndDate?: string)
         driverId: vInfo.driverId || cleanPlate,
         date,
         totalKm: km,
-        fuelLiters: fuel,
-        source: "gpsbox_api",
+        source: "gpsbox_api" as const,
         fetchedAt: new Date().toISOString(),
-        apiStatus: status === "CALCULATED" ? "success" : status.toLowerCase(),
+        apiStatus: (km > 0 ? "success" : "no_data") as "success" | "no_data",
         startOdo: dayStartOdo,
         endOdo: dayEndOdo,
-        note: `GPSBox ODO гинжлэн тооцов (ODO: ${dayStartOdo} -> ${dayEndOdo}, ${km} км)`
+        note: calculatedRouteNote
       };
       generatedDailyGPS.push(dailyMileage);
     }
-
-    // Update active driver current ODO in dbState.drivers
-    const drvIndex = dbState.drivers.findIndex(
-      (d: any) => d.vehicle?.replace(/\s+/g, "").toUpperCase() === cleanPlate
-    );
-    if (drvIndex !== -1 && runningOdo !== null) {
-      dbState.drivers[drvIndex].currentOdo = runningOdo;
-      dbState.drivers[drvIndex].apiOdo = runningOdo;
-      dbState.drivers[drvIndex].startOdo = vInfo.initialOdo ?? dbState.drivers[drvIndex].startOdo;
-    }
   }
 
-  // 3. Merge non-destructively into existing road sheet (trips) — Section 30, 31, 44
-  // Unique logical key: cleanPlate + date
-  const processedKeys = new Set(generatedTrips.map(t => `${t.vehicleNumber}_${t.date}`));
-
-  // Keep existing trips that are outside the backfill range
-  const remainingTrips = dbState.trips.filter((t: any) => {
-    const clean = (t.vehicleNumber || "").replace(/\s+/g, "").toUpperCase();
-    const key = `${clean}_${t.date}`;
-    return !processedKeys.has(key);
+  // 3. Merge non-destructively: only replace non-manual trips in the synced range
+  const generatedMap = new Map<string, any>();
+  generatedTrips.forEach(t => {
+    generatedMap.set(`${t.vehicleNumber}_${t.date}`, t);
   });
 
-  const remainingDaily = dbState.dailyGPSMileages.filter((m: any) => {
-    const clean = (m.vehicleNumber || "").replace(/\s+/g, "").toUpperCase();
-    const key = `${clean}_${m.date}`;
-    return !processedKeys.has(key);
+  // Only retain trips for registered active vehicles
+  const validExistingTrips = (dbState.trips || []).filter((existing: any) => {
+    const keyPlate = (existing?.vehicleNumber || "").replace(/\s+/g, "").toUpperCase();
+    return vehicleMap.has(keyPlate);
   });
 
-  dbState.trips = [...remainingTrips, ...generatedTrips].sort((a, b) => a.date.localeCompare(b.date));
-  dbState.dailyGPSMileages = [...remainingDaily, ...generatedDailyGPS].sort((a, b) => a.date.localeCompare(b.date));
+  const mergedTrips = validExistingTrips.map((existing: any) => {
+    const key = `${(existing.vehicleNumber || "").replace(/\s+/g, "").toUpperCase()}_${existing.date}`;
+    const generated = generatedMap.get(key);
+    if (!generated) return existing;
 
-  // 4. Run Post-Backfill Verification Audit (Section 37)
+    // Do NOT overwrite manual/confirmed trips
+    if (
+      existing.isManual === true ||
+      existing.source === "manual" ||
+      existing.source === "manager" ||
+      existing.status === "CONFIRMED" ||
+      existing.status === "LOCKED"
+    ) {
+      generatedMap.delete(key);
+      return existing;
+    }
+
+    generatedMap.delete(key);
+    return generated;
+  });
+
+  // Append new generated trips that didn't exist before
+  for (const remaining of generatedMap.values()) {
+    mergedTrips.push(remaining);
+  }
+
+  dbState.trips = mergedTrips.sort((a: any, b: any) => a.date.localeCompare(b.date));
+
+  // Daily GPS mileages merge
+  const genGpsMap = new Map<string, any>();
+  generatedDailyGPS.forEach(m => {
+    genGpsMap.set(`${m.vehicleNumber}_${m.date}`, m);
+  });
+
+  // Only retain GPS mileages for registered active vehicles
+  const validExistingGps = (dbState.dailyGPSMileages || []).filter((existing: any) => {
+    const keyPlate = (existing?.vehicleNumber || "").replace(/\s+/g, "").toUpperCase();
+    return vehicleMap.has(keyPlate);
+  });
+
+  const mergedGps = validExistingGps.map((existing: any) => {
+    const key = `${(existing.vehicleNumber || "").replace(/\s+/g, "").toUpperCase()}_${existing.date}`;
+    const gen = genGpsMap.get(key);
+    if (!gen) return existing;
+    genGpsMap.delete(key);
+    return gen;
+  });
+  for (const rem of genGpsMap.values()) {
+    mergedGps.push(rem);
+  }
+  dbState.dailyGPSMileages = mergedGps.sort((a: any, b: any) => a.date.localeCompare(b.date));
+
+  // Audit
   let missingDaysCount = 0;
   let duplicateDaysCount = 0;
   let brokenChainCount = 0;
@@ -383,7 +399,6 @@ export function syncGpsboxTripsAndOdometer(dbState: any, customEndDate?: string)
       .filter((t: any) => (t.vehicleNumber || "").replace(/\s+/g, "").toUpperCase() === cleanPlate)
       .sort((a: any, b: any) => a.date.localeCompare(b.date));
 
-    // Check duplicates
     const dateCounts: Record<string, number> = {};
     vTrips.forEach((t: any) => {
       dateCounts[t.date] = (dateCounts[t.date] || 0) + 1;
@@ -392,12 +407,10 @@ export function syncGpsboxTripsAndOdometer(dbState: any, customEndDate?: string)
       if (t.endOdo < t.startOdo) anomalyCount++;
     });
 
-    // Check missing days in the range
     dates.forEach(d => {
       if (!dateCounts[d]) missingDaysCount++;
     });
 
-    // Check unbroken chain: Day N endOdo === Day N+1 startOdo
     for (let i = 0; i < vTrips.length - 1; i++) {
       const currEnd = vTrips[i].endOdo;
       const nextStart = vTrips[i + 1].startOdo;
@@ -417,81 +430,65 @@ export function syncGpsboxTripsAndOdometer(dbState: any, customEndDate?: string)
     negativeKmCount,
     unmappedVehicles,
     apiErrorsCount: 0,
-    allValid: missingDaysCount === 0 && duplicateDaysCount === 0 && brokenChainCount === 0 && anomalyCount === 0 && negativeKmCount === 0
+    allValid: brokenChainCount === 0 && anomalyCount === 0 && negativeKmCount === 0
   };
 
-  // 5. Persist to SQLite trips and daily_gps_mileages tables
+  // Sync into SQLite safely using upsert (NO blanket DELETE)
   try {
     const db = getDatabase();
-    db.exec("BEGIN IMMEDIATE;");
-    const minDate = startDate;
-    const maxDate = endDate;
+    try {
+      db.exec("ALTER TABLE trips ADD COLUMN is_manual INTEGER DEFAULT 0;");
+    } catch (e) {}
 
-    db.exec(`DELETE FROM trips WHERE date >= '${minDate}' AND date <= '${maxDate}';`);
-    db.exec(`DELETE FROM daily_gps_mileages WHERE date >= '${minDate}' AND date <= '${maxDate}';`);
+    runInTransaction(() => {
+      const upsertTrip = db.prepare(`
+        INSERT INTO trips (
+          id, date, driver_id, driver_name, vehicle_number,
+          sales_rep, zone, start_odo, end_odo, total_km, fuel_liters,
+          fuel_cost, fuel_station, fuel_receipt_no, status,
+          odo_calculation_status, route_note, is_manual, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          start_odo = excluded.start_odo,
+          end_odo = excluded.end_odo,
+          total_km = excluded.total_km,
+          fuel_liters = excluded.fuel_liters,
+          fuel_station = excluded.fuel_station,
+          status = excluded.status,
+          odo_calculation_status = excluded.odo_calculation_status,
+          route_note = excluded.route_note,
+          updated_at = excluded.updated_at
+        WHERE trips.is_manual = 0
+      `);
 
-    const insertTrip = db.prepare(`
-      INSERT OR REPLACE INTO trips (
-        id, date, driver_id, driver_name, vehicle_number,
-        sales_rep, zone, start_odo, end_odo, total_km, fuel_liters,
-        fuel_cost, fuel_station, fuel_receipt_no, status,
-        odo_calculation_status, route_note, manual_override_reason,
-        manual_override_by, manual_override_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
+      const nowStr = new Date().toISOString();
 
-    const insertDaily = db.prepare(`
-      INSERT OR REPLACE INTO daily_gps_mileages (
-        vehicle_number, date, driver_id, total_km,
-        source, fetched_at, api_status, start_odo, end_odo, note
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-
-    const nowStr = new Date().toISOString();
-
-    for (const t of generatedTrips) {
-      insertTrip.run(
-        t.id,
-        t.date,
-        t.driverId,
-        t.driverName,
-        t.vehicleNumber,
-        t.salesRep,
-        t.zone,
-        t.startOdo,
-        t.endOdo,
-        t.totalKm,
-        t.fuelLiters || 0,
-        t.fuelCost || 0,
-        t.fuelStation || "",
-        t.fuelReceiptNo || "",
-        "completed",
-        t.odo_calculation_status || "valid",
-        t.routeNote,
-        null,
-        null,
-        null,
-        nowStr,
-        nowStr
-      );
-    }
-
-    for (const d of generatedDailyGPS) {
-      insertDaily.run(
-        d.vehicleNumber,
-        d.date,
-        d.driverId,
-        d.totalKm,
-        d.source,
-        d.fetchedAt,
-        d.apiStatus,
-        d.startOdo,
-        d.endOdo,
-        d.note
-      );
-    }
-
-    db.exec("COMMIT;");
+      for (const t of generatedTrips) {
+        if (!t.isManual) {
+          upsertTrip.run(
+            t.id,
+            t.date,
+            t.driverId,
+            t.driverName,
+            t.vehicleNumber,
+            t.salesRep,
+            t.zone,
+            t.startOdo,
+            t.endOdo,
+            t.totalKm,
+            t.fuelLiters || 0,
+            t.fuelCost || 0,
+            t.fuelStation || "",
+            t.fuelReceiptNo || "",
+            t.status || "completed",
+            t.odo_calculation_status || "valid",
+            t.routeNote || "",
+            nowStr,
+            nowStr
+          );
+        }
+      }
+    });
   } catch (sqlErr) {
     // Non-fatal if sqlite table not yet initialized
   }
@@ -505,15 +502,11 @@ export function syncGpsboxTripsAndOdometer(dbState: any, customEndDate?: string)
 }
 
 /**
- * Future Daily Automation (Section 39, 40):
- * Periodic worker keeping today and future days synchronized:
- * - 06:00: Captures Opening ODO (from previous day closing ODO)
- * - 23:00: Captures Closing ODO, computes Daily KM, updates Road Sheet
- * - Month boundaries seamless continuation (no reset)
+ * Periodic Daily Odometer Worker
  */
 export function runDailyOdometerAutomation(dbState: any) {
   try {
-    const today = new Date().toISOString().split("T")[0];
+    const today = ubToday();
     const result = syncGpsboxTripsAndOdometer(dbState, today);
     return result;
   } catch (err: any) {

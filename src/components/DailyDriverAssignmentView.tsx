@@ -160,6 +160,7 @@ export const DailyDriverAssignmentView: React.FC<DailyDriverAssignmentViewProps>
 
   // Handle row field change
   const handleRowFieldChange = (routeId: string, field: keyof AssignmentRow, value: any) => {
+    setIsSavedInDb(false);
     setAssignments(prev =>
       prev.map(row => {
         if (row.routeId === routeId) {
@@ -562,13 +563,13 @@ export const DailyDriverAssignmentView: React.FC<DailyDriverAssignmentViewProps>
                     <th className="p-3 whitespace-nowrap">Чиглэл</th>
                     <th className="p-3 min-w-[140px]">Бүсчлэл</th>
                     <th className="p-3 whitespace-nowrap">Үндсэн жолооч</th>
-                    <th className="p-3 whitespace-nowrap">Утас</th>
+                    <th className="p-3 min-w-[115px]">Утас</th>
                     <th className="p-3 min-w-[110px]">Төлөв</th>
                     <th className="p-3 min-w-[120px]">Шалтгаан</th>
                     <th className="p-3 min-w-[160px]">Орлон явсан жолооч</th>
-                    <th className="p-3 whitespace-nowrap">Борлуулагч</th>
-                    <th className="p-3 whitespace-nowrap">Утас</th>
-                    <th className="p-3 whitespace-nowrap">СР Код</th>
+                    <th className="p-3 min-w-[140px]">Борлуулагч</th>
+                    <th className="p-3 min-w-[115px]">Утас</th>
+                    <th className="p-3 min-w-[85px]">СР Код</th>
                     <th className="p-3 whitespace-nowrap">Үндсэн тэрэг</th>
                     <th className="p-3 min-w-[110px]">Төлөв</th>
                     <th className="p-3 min-w-[120px]">Шалтгаан</th>
@@ -630,8 +631,15 @@ export const DailyDriverAssignmentView: React.FC<DailyDriverAssignmentViewProps>
                           </td>
 
                           {/* Жолоочийн Утас */}
-                          <td className="p-3 font-mono text-slate-600 whitespace-nowrap">
-                            {row.driverPhone || "-"}
+                          <td className="p-3">
+                            <input
+                              type="text"
+                              placeholder="Утас..."
+                              value={row.driverPhone || ""}
+                              onChange={e => handleRowFieldChange(row.routeId, "driverPhone", e.target.value)}
+                              className="w-full min-w-[95px] max-w-[115px] bg-slate-50 hover:bg-slate-100/70 focus:bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono font-medium text-slate-700 focus:outline-none focus:ring-1 focus:ring-sky-500 placeholder-slate-400 transition-colors shadow-2xs"
+                              title="Жолоочийн утасны дугаар"
+                            />
                           </td>
 
                           {/* Жолоочийн Төлөв */}
@@ -698,18 +706,39 @@ export const DailyDriverAssignmentView: React.FC<DailyDriverAssignmentViewProps>
                           </td>
 
                           {/* Борлуулагч */}
-                          <td className="p-3 text-slate-800 font-bold whitespace-nowrap">
-                            {row.salesRep || "-"}
+                          <td className="p-3">
+                            <input
+                              type="text"
+                              placeholder="Борлуулагч..."
+                              value={row.salesRep || ""}
+                              onChange={e => handleRowFieldChange(row.routeId, "salesRep", e.target.value)}
+                              className="w-full min-w-[120px] max-w-[155px] bg-slate-50 hover:bg-slate-100/70 focus:bg-white border border-slate-200 rounded-lg px-2.5 py-1 text-xs font-bold text-slate-800 focus:outline-none focus:ring-1 focus:ring-sky-500 placeholder-slate-400 transition-colors shadow-2xs"
+                              title="Борлуулагчийн нэр"
+                            />
                           </td>
 
                           {/* Борлуулагчийн Утас */}
-                          <td className="p-3 font-mono text-slate-600 whitespace-nowrap">
-                            {row.salesRepPhone || "-"}
+                          <td className="p-3">
+                            <input
+                              type="text"
+                              placeholder="Утас..."
+                              value={row.salesRepPhone || ""}
+                              onChange={e => handleRowFieldChange(row.routeId, "salesRepPhone", e.target.value)}
+                              className="w-full min-w-[95px] max-w-[115px] bg-slate-50 hover:bg-slate-100/70 focus:bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono font-medium text-slate-700 focus:outline-none focus:ring-1 focus:ring-sky-500 placeholder-slate-400 transition-colors shadow-2xs"
+                              title="Борлуулагчийн утасны дугаар"
+                            />
                           </td>
 
                           {/* СР Код */}
-                          <td className="p-3 font-mono text-slate-500 whitespace-nowrap text-[11px]">
-                            {row.srCode || "-"}
+                          <td className="p-3">
+                            <input
+                              type="text"
+                              placeholder="СР..."
+                              value={row.srCode || ""}
+                              onChange={e => handleRowFieldChange(row.routeId, "srCode", e.target.value)}
+                              className="w-full min-w-[65px] max-w-[85px] bg-slate-50 hover:bg-slate-100/70 focus:bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono font-medium text-slate-600 focus:outline-none focus:ring-1 focus:ring-sky-500 placeholder-slate-400 transition-colors shadow-2xs"
+                              title="Худалдааны төлөөлөгчийн код"
+                            />
                           </td>
 
                           {/* Үндсэн тэрэг */}

@@ -31,14 +31,34 @@ export function getDatabase(dbFilePath = config.dbPath): DatabaseSync {
       throw new Error(`Integrity check failed: ${check.integrity_check}`);
     }
 
-    // Bootstrap tables and indices
-    db.exec(SCHEMA_SQL);
+    // Bootstrap tables and indices if not already present
+    const hasUsers = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='users';").get();
+    if (!hasUsers) {
+      db.exec(SCHEMA_SQL);
+    } else {
+      try {
+        db.exec("ALTER TABLE trips ADD COLUMN is_manual INTEGER DEFAULT 0;");
+      } catch (e) {}
 
-    // Safe incremental schema adjustments
-    try {
-      db.exec("ALTER TABLE drivers ADD COLUMN km_privacy_pin TEXT;");
-    } catch (e) {
-      // Column already exists or schema initialized fresh
+      const ddaCols = [
+        "driver_phone TEXT",
+        "driver_status TEXT",
+        "driver_reason TEXT",
+        "sales_rep TEXT",
+        "sales_rep_phone TEXT",
+        "sr_code TEXT",
+        "original_vehicle_plate TEXT",
+        "vehicle_status TEXT",
+        "vehicle_reason TEXT",
+        "actual_vehicle_plate TEXT",
+        "vehicle_changed INTEGER DEFAULT 0",
+        "route_status TEXT"
+      ];
+      for (const col of ddaCols) {
+        try {
+          db.exec(`ALTER TABLE daily_driver_assignments ADD COLUMN ${col};`);
+        } catch (e) {}
+      }
     }
 
     return db;

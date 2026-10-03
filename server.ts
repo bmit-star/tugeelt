@@ -11,6 +11,7 @@ import { getDatabase } from "./server/database/client";
 import { runMigration } from "./server/database/migrate";
 import { verifyDatabase } from "./server/database/verify";
 import { logger } from "./server/utils/logger";
+import { config } from "./server/config/env";
 import { restore40Assignments } from "./server/modules/imd/restore-assignments";
 import { syncGpsboxTripsAndOdometer, runDailyOdometerAutomation } from "./server/services/gpsbox-waybill-sync";
 import { DailyAssignmentRepository } from "./server/database/repositories/daily-assignment.repository";
@@ -498,24 +499,34 @@ function loadDB(): DBState {
       return true;
     });
 
-    // Persist the loaded clean state without force-restoring deleted assignments
+    // Ensure trips and dailyGPSMileages strictly only contain vehicles of registered active drivers
+    const activeVehiclePlates = new Set(
+      loaded.drivers
+        .filter(d => d && d.vehicle && (d.status as string) !== "deleted")
+        .map(d => d.vehicle.replace(/\s+/g, "").toUpperCase())
+    );
+    loaded.trips = (loaded.trips || []).filter((t: any) => {
+      const p = (t.vehicleNumber || "").replace(/\s+/g, "").toUpperCase();
+      return activeVehiclePlates.has(p);
+    });
+    loaded.dailyGPSMileages = (loaded.dailyGPSMileages || []).filter((g: any) => {
+      const p = (g.vehicleNumber || "").replace(/\s+/g, "").toUpperCase();
+      return activeVehiclePlates.has(p);
+    });
+
+    // Unbroken Odometer Chain & Official GPSBox Telemetry Synchronization (Single atomic write)
+    try {
+      syncGpsboxTripsAndOdometer(loaded);
+    } catch (gpsSyncErr) {
+      console.error("[LOAD_DB] Failed to synchronize GPSBox waybills & odometers:", gpsSyncErr);
+    }
+
     try {
       const jsonStr = JSON.stringify(loaded, null, 2);
       const tempFile = DB_FILE + ".tmp";
       fs.writeFileSync(tempFile, jsonStr, "utf-8");
       fs.renameSync(tempFile, DB_FILE);
     } catch (e) {}
-
-    // Unbroken Odometer Chain & Official GPSBox Telemetry Synchronization
-    try {
-      syncGpsboxTripsAndOdometer(loaded);
-      const jsonStr = JSON.stringify(loaded, null, 2);
-      const tempFile = DB_FILE + ".tmp";
-      fs.writeFileSync(tempFile, jsonStr, "utf-8");
-      fs.renameSync(tempFile, DB_FILE);
-    } catch (gpsSyncErr) {
-      console.error("[LOAD_DB] Failed to synchronize GPSBox waybills & odometers:", gpsSyncErr);
-    }
 
     return loaded;
   }
@@ -555,7 +566,7 @@ function loadDB(): DBState {
     gpsboxConfig: {
       url: "https://fms2.gpsbox.mn/",
       username: "teso",
-      apiKey: "7FFA953B612BB59AB076B1C561D74BCC",
+      apiKey: config.gpsboxApiKey || process.env.GPSBOX_API_KEY || "7FFA953B612BB59AB076B1C561D74BCC",
       syncStatus: "connected",
       lastSync: new Date().toISOString(),
       sheetUrl: "https://docs.google.com/spreadsheets/d/1Ibws69hyXnVmRlcnopt9tZmLH3sXeqrR1wgVJjEM_BI/edit?gid=0#gid=0"
@@ -4787,7 +4798,7 @@ async function startServer() {
   // Future Daily Automation: Synchronize today and recent ODO chains every 15 minutes (Sections 38, 39, 40)
   setInterval(() => {
     try {
-      runDailyOdometerAutomation(getDatabase());
+      runDailyOdometerAutomation(db);
     } catch (e) {}
   }, 15 * 60 * 1000);
 
@@ -5065,6 +5076,22 @@ async function startServer() {
           updatedAt: now
         };
         db.dailyAssignments.push(assignRecord);
+
+        // Synchronize edited salesRep and driver phone to the matching driver master profile
+        if (item.originalDriverId) {
+          const matchedDriver = db.drivers.find(d => 
+            d.id === item.originalDriverId || 
+            (d.code && d.code.toUpperCase() === String(item.originalDriverCode || "").toUpperCase())
+          );
+          if (matchedDriver) {
+            if (item.salesRep !== undefined && item.salesRep !== null) {
+              matchedDriver.salesRep = String(item.salesRep).trim();
+            }
+            if (item.driverPhone && String(item.driverPhone).trim()) {
+              matchedDriver.phone = String(item.driverPhone).trim();
+            }
+          }
+        }
 
         if (isDriverChanged) {
           finesCount++;

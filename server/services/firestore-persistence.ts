@@ -3,7 +3,6 @@ import {
   getFirestore,
   doc,
   setDoc,
-  getDoc,
   getDocs,
   deleteDoc,
   collection,
@@ -14,6 +13,36 @@ import fs from "fs";
 import path from "path";
 
 let dbInstance: Firestore | null = null;
+let quotaExhaustedUntil = 0; // Timestamp until which Firestore writes are paused
+
+function isQuotaExhausted(err: any): boolean {
+  if (!err) return false;
+  const code = String(err.code || "");
+  const msg = String(err.message || "");
+  return (
+    code === "resource-exhausted" ||
+    code === "8" ||
+    err.code === 8 ||
+    msg.includes("RESOURCE_EXHAUSTED") ||
+    msg.includes("Quota limit exceeded") ||
+    msg.includes("quota metric") ||
+    msg.includes("free tier database")
+  );
+}
+
+function handleFirestoreError(context: string, err: any): void {
+  if (isQuotaExhausted(err)) {
+    // Free daily quota exhausted on Firestore free tier; pause cloud writes for 1 hour
+    quotaExhaustedUntil = Date.now() + 60 * 60 * 1000;
+    dirtyDrivers.clear();
+    dirtyAssignments.clear();
+    dirtyOrders.clear();
+    dirtyConfigs.clear();
+    console.warn(`[FIRESTORE] Free tier daily write quota limit reached in ${context}. Pausing cloud writes for 1 hour. Local database operates with zero disruption.`);
+  } else {
+    console.warn(`[FIRESTORE] Cloud sync notice in ${context}:`, err?.message || err);
+  }
+}
 
 function sanitizeForFirestore(obj: any): any {
   if (obj === undefined) return null;
@@ -36,18 +65,38 @@ export function getFirestoreDB(): Firestore | null {
   try {
     const configPath = path.resolve(process.cwd(), "firebase-applet-config.json");
     if (!fs.existsSync(configPath)) {
-      console.warn("[FIRESTORE_PERSISTENCE] firebase-applet-config.json not found");
       return null;
     }
     const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
     const app = getApps().length === 0 ? initializeApp(config) : getApp();
     dbInstance = getFirestore(app, config.firestoreDatabaseId);
-    console.log("[FIRESTORE_PERSISTENCE] Firestore initialized successfully with dbId:", config.firestoreDatabaseId);
     return dbInstance;
   } catch (err: any) {
     console.error("[FIRESTORE_PERSISTENCE] Failed to initialize Firestore:", err.message);
     return null;
   }
+}
+
+// Dirty tracking sets to prevent redundant Firestore writes and avoid quota exhaustion
+const dirtyDrivers = new Set<string>();
+const dirtyAssignments = new Set<string>();
+const dirtyOrders = new Set<string>();
+const dirtyConfigs = new Set<string>();
+
+export function markDirtyDriver(id: string): void {
+  if (id) dirtyDrivers.add(String(id).toUpperCase());
+}
+
+export function markDirtyAssignment(id: string): void {
+  if (id) dirtyAssignments.add(String(id));
+}
+
+export function markDirtyOrder(id: string): void {
+  if (id) dirtyOrders.add(String(id));
+}
+
+export function markDirtyConfig(key: string): void {
+  if (key) dirtyConfigs.add(String(key));
 }
 
 /**
@@ -56,15 +105,16 @@ export function getFirestoreDB(): Firestore | null {
 export async function saveAssignmentToFirestore(asn: any): Promise<void> {
   const db = getFirestoreDB();
   if (!db || !asn || !asn.id) return;
+  if (Date.now() < quotaExhaustedUntil) return;
+
   try {
     const clean = sanitizeForFirestore({
       ...asn,
       _syncedAt: new Date().toISOString()
     });
     await setDoc(doc(db, "fleet_assignments", String(asn.id)), clean, { merge: true });
-    console.log(`[FIRESTORE] Assignment ${asn.id} (${asn.orderNo || ""}) synced successfully`);
   } catch (err: any) {
-    console.error(`[FIRESTORE] Failed to sync assignment ${asn.id}:`, err.message);
+    handleFirestoreError("saveAssignmentToFirestore", err);
   }
 }
 
@@ -74,11 +124,12 @@ export async function saveAssignmentToFirestore(asn: any): Promise<void> {
 export async function deleteAssignmentFromFirestore(asnId: string): Promise<void> {
   const db = getFirestoreDB();
   if (!db || !asnId) return;
+  if (Date.now() < quotaExhaustedUntil) return;
+
   try {
     await deleteDoc(doc(db, "fleet_assignments", String(asnId)));
-    console.log(`[FIRESTORE] Assignment ${asnId} deleted from Firestore`);
   } catch (err: any) {
-    console.error(`[FIRESTORE] Failed to delete assignment ${asnId}:`, err.message);
+    handleFirestoreError("deleteAssignmentFromFirestore", err);
   }
 }
 
@@ -88,6 +139,8 @@ export async function deleteAssignmentFromFirestore(asnId: string): Promise<void
 export async function saveOrderToFirestore(order: any): Promise<void> {
   const db = getFirestoreDB();
   if (!db || !order || !order.id) return;
+  if (Date.now() < quotaExhaustedUntil) return;
+
   try {
     const clean = sanitizeForFirestore({
       ...order,
@@ -95,7 +148,7 @@ export async function saveOrderToFirestore(order: any): Promise<void> {
     });
     await setDoc(doc(db, "fleet_orders", String(order.id)), clean, { merge: true });
   } catch (err: any) {
-    console.error(`[FIRESTORE] Failed to sync order ${order.id}:`, err.message);
+    handleFirestoreError("saveOrderToFirestore", err);
   }
 }
 
@@ -105,28 +158,32 @@ export async function saveOrderToFirestore(order: any): Promise<void> {
 export async function deleteOrderFromFirestore(orderId: string): Promise<void> {
   const db = getFirestoreDB();
   if (!db || !orderId) return;
+  if (Date.now() < quotaExhaustedUntil) return;
+
   try {
     await deleteDoc(doc(db, "fleet_orders", String(orderId)));
   } catch (err: any) {
-    console.error(`[FIRESTORE] Failed to delete order ${orderId}:`, err.message);
+    handleFirestoreError("deleteOrderFromFirestore", err);
   }
 }
 
 /**
- * Save driver modifications to Firestore
+ * Save driver modifications to Firestore (Full document without merge so cleared fields are removed)
  */
 export async function saveDriverToFirestore(driver: any): Promise<void> {
   const db = getFirestoreDB();
-  if (!db || !driver || !driver.id) return;
+  if (!driver || !driver.id) return;
+  if (Date.now() < quotaExhaustedUntil) return;
+
   try {
     const clean = sanitizeForFirestore({
       ...driver,
       _syncedAt: new Date().toISOString()
     });
-    await setDoc(doc(db, "fleet_drivers", String(driver.id)), clean, { merge: true });
-    console.log(`[FIRESTORE] Driver ${driver.id} (${driver.name || ""}) synced successfully`);
+    // Write full document WITHOUT merge: true so cleared fields (phone, salesRep, etc.) are deleted in Firestore
+    await setDoc(doc(db, "fleet_drivers", String(driver.id)), clean);
   } catch (err: any) {
-    console.error(`[FIRESTORE] Failed to sync driver ${driver.id}:`, err.message);
+    handleFirestoreError("saveDriverToFirestore", err);
   }
 }
 
@@ -136,11 +193,12 @@ export async function saveDriverToFirestore(driver: any): Promise<void> {
 export async function deleteDriverFromFirestore(driverId: string): Promise<void> {
   const db = getFirestoreDB();
   if (!db || !driverId) return;
+  if (Date.now() < quotaExhaustedUntil) return;
+
   try {
     await deleteDoc(doc(db, "fleet_drivers", String(driverId)));
-    console.log(`[FIRESTORE] Driver ${driverId} deleted from Firestore`);
   } catch (err: any) {
-    console.error(`[FIRESTORE] Failed to delete driver ${driverId}:`, err.message);
+    handleFirestoreError("deleteDriverFromFirestore", err);
   }
 }
 
@@ -150,21 +208,22 @@ export async function deleteDriverFromFirestore(driverId: string): Promise<void>
 export async function saveConfigToFirestore(key: string, data: any): Promise<void> {
   const db = getFirestoreDB();
   if (!db || !key || !data) return;
+  if (Date.now() < quotaExhaustedUntil) return;
+
   try {
     const clean = sanitizeForFirestore({
       key,
       data,
       _syncedAt: new Date().toISOString()
     });
-    await setDoc(doc(db, "fleet_configs", key), clean, { merge: true });
-    console.log(`[FIRESTORE] Config '${key}' synced successfully`);
+    await setDoc(doc(db, "fleet_configs", key), clean);
   } catch (err: any) {
-    console.error(`[FIRESTORE] Failed to sync config '${key}':`, err.message);
+    handleFirestoreError("saveConfigToFirestore", err);
   }
 }
 
 /**
- * Load all persistent state from Firestore
+ * Load all persistent data from Firestore on boot
  */
 export async function loadAllFromFirestore(): Promise<{
   assignments: any[];
@@ -196,13 +255,14 @@ export async function loadAllFromFirestore(): Promise<{
     console.log(`[FIRESTORE] Loaded from cloud: ${assignments.length} assignments, ${orders.length} orders, ${drivers.length} drivers, ${Object.keys(configs).length} configs`);
     return { assignments, orders, drivers, configs };
   } catch (err: any) {
-    console.error("[FIRESTORE] Failed to load cloud state:", err.message);
+    console.warn("[FIRESTORE] Cloud state load notice:", err.message);
     return null;
   }
 }
 
 /**
  * Hydrate in-memory state with persistent Firestore records
+ * Strictly honors tombstones and timestamps (local newer wins).
  */
 export function hydrateStateWithFirestore(state: any, cloudData: {
   assignments: any[];
@@ -212,6 +272,10 @@ export function hydrateStateWithFirestore(state: any, cloudData: {
 }): boolean {
   if (!state || !cloudData) return false;
   let modified = false;
+
+  const deletedDrivers = new Set(Object.keys(state.deleted?.drivers || {}));
+  const deletedAssignments = new Set(Object.keys(state.deleted?.assignments || {}));
+  const deletedOrders = new Set(Object.keys(state.deleted?.orders || {}));
 
   // 1. Hydrate Assignments (Томилолт)
   if (cloudData.assignments && cloudData.assignments.length > 0) {
@@ -223,22 +287,22 @@ export function hydrateStateWithFirestore(state: any, cloudData: {
 
     cloudData.assignments.forEach(cloudAsn => {
       if (!cloudAsn || !cloudAsn.id) return;
+      if (deletedAssignments.has(String(cloudAsn.id))) return; // Skip tombstoned
+
       const existing = existingAsnMap.get(String(cloudAsn.id));
       if (!existing) {
         state.assignments.push(cloudAsn);
         modified = true;
       } else {
-        // Merge cloud updates
         const cloudTime = new Date(cloudAsn.updatedAt || cloudAsn._syncedAt || 0).getTime();
         const localTime = new Date(existing.updatedAt || 0).getTime();
-        if (cloudTime >= localTime) {
+        if (cloudTime > localTime) {
           Object.assign(existing, cloudAsn);
           modified = true;
         }
       }
     });
 
-    // Sort by departureDate descending
     state.assignments.sort((a: any, b: any) => 
       String(b.departureDate || "").localeCompare(String(a.departureDate || ""))
     );
@@ -254,9 +318,19 @@ export function hydrateStateWithFirestore(state: any, cloudData: {
 
     cloudData.orders.forEach(cloudOrd => {
       if (!cloudOrd || !cloudOrd.id) return;
-      if (!existingOrdMap.has(String(cloudOrd.id))) {
+      if (deletedOrders.has(String(cloudOrd.id))) return; // Skip tombstoned
+
+      const existing = existingOrdMap.get(String(cloudOrd.id));
+      if (!existing) {
         state.orders.push(cloudOrd);
         modified = true;
+      } else {
+        const cloudTime = new Date(cloudOrd.updatedAt || cloudOrd._syncedAt || 0).getTime();
+        const localTime = new Date(existing.updatedAt || 0).getTime();
+        if (cloudTime > localTime) {
+          Object.assign(existing, cloudOrd);
+          modified = true;
+        }
       }
     });
   }
@@ -271,22 +345,34 @@ export function hydrateStateWithFirestore(state: any, cloudData: {
 
     cloudData.drivers.forEach(cloudDriver => {
       if (!cloudDriver || !cloudDriver.id) return;
-      const existing = driverMap.get(String(cloudDriver.id).toUpperCase());
+      const cleanId = String(cloudDriver.id).toUpperCase();
+      if (deletedDrivers.has(cleanId) || cloudDriver.status === "deleted") return; // Skip tombstoned
+
+      const existing = driverMap.get(cleanId);
       if (existing) {
-        // Protect user-edited fields from being reverted
-        if (cloudDriver.name) existing.name = cloudDriver.name;
-        if (cloudDriver.phone) existing.phone = cloudDriver.phone;
-        if (cloudDriver.vehicle) existing.vehicle = cloudDriver.vehicle;
-        if (cloudDriver.model) existing.model = cloudDriver.model;
-        if (cloudDriver.salesRep !== undefined) existing.salesRep = cloudDriver.salesRep;
-        if (cloudDriver.defaultRoute) existing.defaultRoute = cloudDriver.defaultRoute;
-        if (cloudDriver.zone) existing.zone = cloudDriver.zone;
-        if (cloudDriver.isIMD !== undefined) existing.isIMD = cloudDriver.isIMD;
-        if (cloudDriver.organization) existing.organization = cloudDriver.organization;
-        if (cloudDriver.jobTitle) existing.jobTitle = cloudDriver.jobTitle;
-        if (cloudDriver.autoOdoConfig) existing.autoOdoConfig = cloudDriver.autoOdoConfig;
-        if (cloudDriver.status) existing.status = cloudDriver.status;
-        modified = true;
+        const cloudTime = new Date(cloudDriver.updatedAt || cloudDriver._syncedAt || 0).getTime();
+        const localTime = new Date(existing.updatedAt || 0).getTime();
+        const cloudRev = Number(cloudDriver.rev || 0);
+        const localRev = Number(existing.rev || 0);
+
+        // Local wins if newer or higher revision
+        if (cloudTime > localTime || cloudRev > localRev) {
+          existing.name = cloudDriver.name ?? existing.name;
+          existing.phone = cloudDriver.phone ?? "";
+          existing.vehicle = cloudDriver.vehicle ?? existing.vehicle;
+          existing.model = cloudDriver.model ?? existing.model;
+          existing.salesRep = cloudDriver.salesRep ?? "";
+          existing.defaultRoute = cloudDriver.defaultRoute ?? "";
+          existing.zone = cloudDriver.zone ?? "";
+          existing.isIMD = cloudDriver.isIMD ?? existing.isIMD;
+          existing.organization = cloudDriver.organization ?? existing.organization;
+          existing.jobTitle = cloudDriver.jobTitle ?? existing.jobTitle;
+          existing.autoOdoConfig = cloudDriver.autoOdoConfig ?? existing.autoOdoConfig;
+          existing.status = cloudDriver.status ?? existing.status;
+          existing.rev = Math.max(cloudRev, localRev);
+          existing.updatedAt = cloudDriver.updatedAt || new Date().toISOString();
+          modified = true;
+        }
       } else {
         state.drivers.push(cloudDriver);
         modified = true;
@@ -296,8 +382,11 @@ export function hydrateStateWithFirestore(state: any, cloudData: {
 
   // 4. Hydrate Configs (Тохиргоо)
   if (cloudData.configs) {
-    if (cloudData.configs.work_schedule) {
-      state.workScheduleConfig = cloudData.configs.work_schedule;
+    if (cloudData.configs.work_schedule && !state.workScheduleConfig?.months) {
+      state.workScheduleConfig = {
+        ...state.workScheduleConfig,
+        ...cloudData.configs.work_schedule
+      };
       modified = true;
     }
     if (cloudData.configs.gpsbox) {
@@ -326,7 +415,7 @@ export function hydrateStateWithFirestore(state: any, cloudData: {
         } else {
           const cloudTime = new Date(cloudItem.updatedAt || cloudItem._syncedAt || 0).getTime();
           const localTime = new Date(local.updatedAt || 0).getTime();
-          if (cloudTime >= localTime) {
+          if (cloudTime > localTime) {
             Object.assign(local, cloudItem);
             modified = true;
           }
@@ -338,64 +427,90 @@ export function hydrateStateWithFirestore(state: any, cloudData: {
   return modified;
 }
 
-// Debounced background full sync
+// Debounced background selective sync (runs at most once every 60s for DIRTY entities only)
 let syncTimeout: NodeJS.Timeout | null = null;
+let lastSyncTimestamp = 0;
 
-export function triggerFullFirestoreSync(state: any, delayMs = 1500) {
+export function triggerFullFirestoreSync(state: any, delayMs = 60000) {
+  if (Date.now() < quotaExhaustedUntil) return;
   if (syncTimeout) clearTimeout(syncTimeout);
+
   syncTimeout = setTimeout(async () => {
     const db = getFirestoreDB();
     if (!db || !state) return;
+    if (Date.now() < quotaExhaustedUntil) return;
+
+    // Check if there is anything dirty to write
+    const hasDirty = dirtyDrivers.size > 0 || dirtyAssignments.size > 0 || dirtyOrders.size > 0 || dirtyConfigs.size > 0;
+    if (!hasDirty) return;
 
     try {
-      console.log("[FIRESTORE] Performing debounced full sync to cloud...");
-      const batchPromises: Promise<any>[] = [];
+      const now = Date.now();
+      if (now - lastSyncTimestamp < 30000) return; // Min 30s interval
+      lastSyncTimestamp = now;
 
-      // 1. Sync assignments
-      if (Array.isArray(state.assignments)) {
-        for (const asn of state.assignments) {
-          if (asn && asn.id) {
-            batchPromises.push(saveAssignmentToFirestore(asn));
-          }
+      const batch = writeBatch(db);
+      let opCount = 0;
+
+      // 1. Sync dirty drivers only
+      for (const dId of Array.from(dirtyDrivers)) {
+        if (opCount >= 400) break;
+        const drv = (state.drivers || []).find((d: any) => String(d.id).toUpperCase() === dId);
+        if (drv) {
+          const clean = sanitizeForFirestore({ ...drv, _syncedAt: new Date().toISOString() });
+          batch.set(doc(db, "fleet_drivers", String(drv.id)), clean);
+          opCount++;
         }
+        dirtyDrivers.delete(dId);
       }
 
-      // 2. Sync orders
-      if (Array.isArray(state.orders)) {
-        for (const ord of state.orders) {
-          if (ord && ord.id) {
-            batchPromises.push(saveOrderToFirestore(ord));
-          }
+      // 2. Sync dirty assignments only
+      for (const aId of Array.from(dirtyAssignments)) {
+        if (opCount >= 400) break;
+        const asn = (state.assignments || []).find((a: any) => String(a.id) === aId);
+        if (asn) {
+          const clean = sanitizeForFirestore({ ...asn, _syncedAt: new Date().toISOString() });
+          batch.set(doc(db, "fleet_assignments", String(asn.id)), clean);
+          opCount++;
         }
+        dirtyAssignments.delete(aId);
       }
 
-      // 3. Sync configs
-      if (state.workScheduleConfig) {
-        batchPromises.push(saveConfigToFirestore("work_schedule", state.workScheduleConfig));
-      }
-      if (state.gpsboxConfig) {
-        batchPromises.push(saveConfigToFirestore("gpsbox", state.gpsboxConfig));
-      }
-      if (state.fineConfig) {
-        batchPromises.push(saveConfigToFirestore("fine_config", state.fineConfig));
-      }
-      if (state.dailyAssignments) {
-        batchPromises.push(saveConfigToFirestore("daily_assignments", state.dailyAssignments));
-      }
-
-      // 4. Sync drivers
-      if (Array.isArray(state.drivers)) {
-        for (const drv of state.drivers) {
-          if (drv && drv.id) {
-            batchPromises.push(saveDriverToFirestore(drv));
-          }
+      // 3. Sync dirty orders only
+      for (const oId of Array.from(dirtyOrders)) {
+        if (opCount >= 400) break;
+        const ord = (state.orders || []).find((o: any) => String(o.id) === oId);
+        if (ord) {
+          const clean = sanitizeForFirestore({ ...ord, _syncedAt: new Date().toISOString() });
+          batch.set(doc(db, "fleet_orders", String(ord.id)), clean);
+          opCount++;
         }
+        dirtyOrders.delete(oId);
       }
 
-      await Promise.allSettled(batchPromises);
-      console.log("[FIRESTORE] Full cloud sync complete!");
+      // 4. Sync dirty configs only
+      for (const cKey of Array.from(dirtyConfigs)) {
+        if (opCount >= 400) break;
+        let cfgData: any = null;
+        if (cKey === "work_schedule") cfgData = state.workScheduleConfig;
+        else if (cKey === "gpsbox") cfgData = state.gpsboxConfig;
+        else if (cKey === "fine_config") cfgData = state.fineConfig;
+        else if (cKey === "daily_assignments") cfgData = state.dailyAssignments;
+
+        if (cfgData) {
+          const clean = sanitizeForFirestore({ key: cKey, data: cfgData, _syncedAt: new Date().toISOString() });
+          batch.set(doc(db, "fleet_configs", cKey), clean);
+          opCount++;
+        }
+        dirtyConfigs.delete(cKey);
+      }
+
+      if (opCount > 0) {
+        await batch.commit();
+        console.log(`[FIRESTORE] Committed batch of ${opCount} dirty entities to cloud.`);
+      }
     } catch (err: any) {
-      console.error("[FIRESTORE] Full sync error:", err.message);
+      handleFirestoreError("triggerFullFirestoreSync", err);
     }
   }, delayMs);
 }
