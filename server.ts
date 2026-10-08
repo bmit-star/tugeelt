@@ -291,6 +291,8 @@ interface DBState {
   workScheduleConfig?: WorkScheduleConfig;
   customTelemetry: Record<string, Telemetry>;
   finesCache?: Record<string, { result: FineResult; timestamp: number }>;
+  deletedDrivers?: string[];
+  deletedVehicles?: string[];
   orders?: any[];
   assignments?: any[];
   routes?: any[];
@@ -343,6 +345,12 @@ function loadDB(): DBState {
     if (!loaded.driverChangeFines) {
       loaded.driverChangeFines = [];
     }
+    if (!loaded.deletedDrivers) {
+      loaded.deletedDrivers = [];
+    }
+    if (!loaded.deletedVehicles) {
+      loaded.deletedVehicles = [];
+    }
     if (!loaded.fineConfig) {
       loaded.fineConfig = {
         defaultFineAmount: 10000,
@@ -375,8 +383,12 @@ function loadDB(): DBState {
 
     const driverMap = new Map<string, Driver>();
     loaded.drivers.forEach(d => driverMap.set(d.id.toUpperCase(), d));
+    const deletedDriversSet = new Set((loaded.deletedDrivers || []).map(s => s.toUpperCase()));
 
     DEFAULT_DRIVERS.forEach(def => {
+      if (deletedDriversSet.has(def.id.toUpperCase()) || deletedDriversSet.has(def.code.toUpperCase())) {
+        return; // Permanently respect user deletion of this driver
+      }
       const existing = driverMap.get(def.id.toUpperCase());
       if (existing) {
         if (def.isIMD) {
@@ -1595,7 +1607,10 @@ app.post("/api/drivers", (req: Request, res: Response) => {
       }
     }
 
-    const existingIndex = db.drivers.findIndex(d => d.id.toUpperCase() === cleanCode || d.code.toUpperCase() === cleanCode);
+    const existingIndex = db.drivers.findIndex(d => 
+      String(d.id || "").trim().toUpperCase() === cleanCode || 
+      String(d.code || "").trim().toUpperCase() === cleanCode
+    );
 
     if (existingIndex !== -1) {
       db.drivers[existingIndex] = {
@@ -1635,6 +1650,13 @@ app.post("/api/drivers", (req: Request, res: Response) => {
       isCustom: true
     };
 
+    if (!db.deletedDrivers) db.deletedDrivers = [];
+    db.deletedDrivers = db.deletedDrivers.filter(x => x !== cleanCode);
+    if (cleanVeh && cleanVeh !== "----") {
+      if (!db.deletedVehicles) db.deletedVehicles = [];
+      db.deletedVehicles = db.deletedVehicles.filter(x => x !== cleanVeh.replace(/\s+/g, "").toUpperCase());
+    }
+
     db.drivers.push(newDriver);
     saveDB(db);
     saveDriverToFirestore(newDriver);
@@ -1670,6 +1692,15 @@ app.put("/api/drivers/:id", (req: Request, res: Response) => {
 app.delete("/api/drivers/:id", (req: Request, res: Response) => {
   const { id } = req.params;
   const cleanId = String(id).trim().toUpperCase();
+  if (!db.deletedDrivers) db.deletedDrivers = [];
+  if (!db.deletedDrivers.includes(cleanId)) {
+    db.deletedDrivers.push(cleanId);
+  }
+  const targetDriver = db.drivers.find(d => String(d.id || "").trim().toUpperCase() === cleanId || String(d.code || "").trim().toUpperCase() === cleanId);
+  if (targetDriver?.code && !db.deletedDrivers.includes(targetDriver.code.toUpperCase())) {
+    db.deletedDrivers.push(targetDriver.code.toUpperCase());
+  }
+
   db.drivers = db.drivers.filter(d => String(d.id || "").trim().toUpperCase() !== cleanId && String(d.code || "").trim().toUpperCase() !== cleanId);
   saveDB(db);
   deleteDriverFromFirestore(id);
@@ -1678,6 +1709,81 @@ app.delete("/api/drivers/:id", (req: Request, res: Response) => {
     sqlite.prepare("DELETE FROM drivers WHERE id = ? OR code = ?").run(id, id);
   } catch (e) {}
   res.json({ status: "success", message: "Жолооч устгагдлаа" });
+});
+
+// Generic Vehicle endpoints (supports both City and Regional vehicles)
+app.post("/api/vehicles", (req: Request, res: Response) => {
+  try {
+    const { plate, boxCapacity, driverName, phone, model, defaultRoute, organization, code } = req.body;
+    if (!plate || !plate.trim()) {
+      return res.status(400).json({ error: "Машины улсын дугаар оруулна уу" });
+    }
+    const cleanPlate = plate.trim().toUpperCase();
+    const norm = cleanPlate.replace(/\s+/g, "");
+    if (!db.deletedVehicles) db.deletedVehicles = [];
+    db.deletedVehicles = db.deletedVehicles.filter(x => x !== norm);
+
+    const existingIdx = db.drivers.findIndex(d => (d.vehicle || "").replace(/\s+/g, "").toUpperCase() === norm);
+    if (existingIdx !== -1) {
+      if (boxCapacity) db.drivers[existingIdx].boxCapacity = Number(boxCapacity);
+      if (driverName) db.drivers[existingIdx].name = driverName.trim();
+      if (phone) db.drivers[existingIdx].phone = phone.trim();
+      if (model) db.drivers[existingIdx].model = model.trim();
+      if (defaultRoute !== undefined) db.drivers[existingIdx].defaultRoute = defaultRoute.trim();
+      if (organization) db.drivers[existingIdx].organization = organization.trim();
+      saveDB(db);
+      return res.json({ status: "success", vehicle: { plate: cleanPlate, boxCapacity: db.drivers[existingIdx].boxCapacity, driver: db.drivers[existingIdx] } });
+    }
+
+    const newDriver: Driver = {
+      id: code ? String(code).trim().toUpperCase() : norm.slice(-4),
+      code: code ? String(code).trim().toUpperCase() : norm.slice(-4),
+      name: driverName ? driverName.trim() : `Жолооч (${cleanPlate})`,
+      phone: phone || "",
+      vehicle: cleanPlate,
+      model: model || "Isuzu",
+      salesRep: "Борлуулалт",
+      defaultRoute: defaultRoute || "",
+      status: "active",
+      organization: organization || "Айсмарк Дистрибьюшн ХХК",
+      boxCapacity: Number(boxCapacity) || 700,
+      isCustom: true
+    };
+    db.drivers.push(newDriver);
+    saveDB(db);
+    res.json({ status: "success", vehicle: { plate: cleanPlate, boxCapacity: newDriver.boxCapacity, driver: newDriver } });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete("/api/vehicles/:plate", (req: Request, res: Response) => {
+  try {
+    const { plate } = req.params;
+    const cleanPlate = decodeURIComponent(plate).replace(/\s+/g, "").toUpperCase();
+    if (!db.deletedVehicles) db.deletedVehicles = [];
+    if (!db.deletedVehicles.includes(cleanPlate)) {
+      db.deletedVehicles.push(cleanPlate);
+    }
+
+    // Unassign or remove from drivers
+    let modified = false;
+    db.drivers.forEach(d => {
+      if ((d.vehicle || "").replace(/\s+/g, "").toUpperCase() === cleanPlate) {
+        if (d.isCustom) {
+          d.vehicle = "----";
+        } else {
+          d.vehicle = "----";
+        }
+        modified = true;
+      }
+    });
+
+    if (modified) saveDB(db);
+    res.json({ status: "success", message: `Машин ${cleanPlate} амжилттай хасагдлаа` });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // IMD Түгээгчийн явсан км нуух, нууц үг тохируулах болон шалгах endpoint
@@ -4222,8 +4328,17 @@ function parseOnlyFine(json: any, plate: string, displayPlate: string): FineResu
 
     // Ensure new items default to unpaid if not specified
     newItems.forEach((it: any) => {
-      if (it && typeof it === "object" && it.is_paid === undefined) {
-        it.is_paid = false;
+      if (it && typeof it === "object") {
+        if (it.is_paid === undefined) it.is_paid = false;
+        if (!it.status) it.status = "ТӨЛӨӨГҮЙ";
+      }
+    });
+
+    // Ensure old items default to paid if not specified
+    oldItems.forEach((it: any) => {
+      if (it && typeof it === "object") {
+        if (it.is_paid === undefined) it.is_paid = true;
+        if (!it.status) it.status = "ТӨЛСӨН";
       }
     });
 
@@ -4430,16 +4545,40 @@ async function fetchFinesForSinglePlate(plateInput: string, forceRefresh = false
   }
 
   const cached = db.finesCache[cleanPlate];
-  // 15 min cache TTL for high performance & reducing server load
-  if (!forceRefresh && cached && cached.result && now - cached.timestamp < 15 * 60 * 1000) {
+  // Cache TTL: 15 min if valid rows exist, but only 2 min if empty/clean
+  const cacheTtlMs = cached?.result?.rows && cached.result.rows.length > 0 ? 15 * 60 * 1000 : 2 * 60 * 1000;
+  if (!forceRefresh && cached && cached.result && now - cached.timestamp < cacheTtlMs) {
     return sanitizeFineResult(cached.result, cleanPlate, displayPlate);
   }
 
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000);
+    // 1. Prime erthub vehicle cache with registration call first (required by erthub upstream flow)
+    try {
+      const regCtrl = new AbortController();
+      const regTimeout = setTimeout(() => regCtrl.abort(), 10000);
+      await fetch("https://erthub.mn/api/vehicle", {
+        method: "POST",
+        headers: {
+          "Accept": "application/json, text/plain, */*",
+          "Content-Type": "application/json; charset=utf-8",
+          "Origin": "https://erthub.mn",
+          "Referer": "https://erthub.mn/",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        },
+        body: JSON.stringify({
+          plate_number: cyrillicPlate,
+          operation: "registration",
+          type: "",
+        }),
+        signal: regCtrl.signal,
+      }).catch(() => {});
+      clearTimeout(regTimeout);
+    } catch (e) {}
 
-    // Call erthub penalties endpoint with required type: "new"
+    // 2. Call erthub penalties endpoint with required type: "new"
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 20000);
+
     let response: any = null;
     try {
       response = await fetch("https://erthub.mn/api/vehicle", {
@@ -4460,7 +4599,7 @@ async function fetchFinesForSinglePlate(plateInput: string, forceRefresh = false
       });
     } catch (fetchErr: any) {
       clearTimeout(timeoutId);
-      if (cached && cached.result) {
+      if (cached && cached.result && cached.result.rows && cached.result.rows.length > 0) {
         return sanitizeFineResult(cached.result, cleanPlate, displayPlate);
       }
       throw fetchErr;
@@ -4472,7 +4611,7 @@ async function fetchFinesForSinglePlate(plateInput: string, forceRefresh = false
     if (!response.ok && response.status !== 404) {
       try {
         const fallbackCtrl = new AbortController();
-        const fallbackTimeout = setTimeout(() => fallbackCtrl.abort(), 5000);
+        const fallbackTimeout = setTimeout(() => fallbackCtrl.abort(), 8000);
         const fallbackRes = await fetch("https://erthub.mn/api/vehicle", {
           method: "POST",
           headers: {
@@ -4496,7 +4635,7 @@ async function fetchFinesForSinglePlate(plateInput: string, forceRefresh = false
     }
 
     if (!response.ok) {
-      if (cached && cached.result) {
+      if (cached && cached.result && cached.result.rows && cached.result.rows.length > 0) {
         return sanitizeFineResult(cached.result, cleanPlate, displayPlate);
       }
       return {
@@ -4510,7 +4649,7 @@ async function fetchFinesForSinglePlate(plateInput: string, forceRefresh = false
         paidAmount: 0,
         totalCount: 0,
         totalAmount: 0,
-        status: "ЦЭВЭР",
+        status: "АЛДАА",
         rows: [],
         error: `HTTP ${response.status}`,
         checkedAt: new Date().toISOString(),
@@ -4518,8 +4657,37 @@ async function fetchFinesForSinglePlate(plateInput: string, forceRefresh = false
     }
 
     const json = await response.json();
-    const result = parseOnlyFine(json, cleanPlate, displayPlate);
+    let result = parseOnlyFine(json, cleanPlate, displayPlate);
     
+    // If upstream returned 0 rows on first attempt, retry once after a short 1000ms delay to give erthub session time to sync
+    if (result.rows.length === 0) {
+      try {
+        await new Promise(r => setTimeout(r, 1000));
+        const retryRes = await fetch("https://erthub.mn/api/vehicle", {
+          method: "POST",
+          headers: {
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/json; charset=utf-8",
+            "Origin": "https://erthub.mn",
+            "Referer": "https://erthub.mn/",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          },
+          body: JSON.stringify({
+            plate_number: cyrillicPlate,
+            operation: "penalties",
+            type: "new",
+          }),
+        });
+        if (retryRes.ok) {
+          const retryJson = await retryRes.json();
+          const retryResult = parseOnlyFine(retryJson, cleanPlate, displayPlate);
+          if (retryResult.rows.length > 0) {
+            result = retryResult;
+          }
+        }
+      } catch (e) {}
+    }
+
     // Save to persistent db.finesCache
     db.finesCache[cleanPlate] = { result, timestamp: now };
     saveDB(db);
@@ -4527,7 +4695,7 @@ async function fetchFinesForSinglePlate(plateInput: string, forceRefresh = false
     return result;
   } catch (err: any) {
     console.warn(`Fines API warning for ${displayPlate} (${cyrillicPlate}):`, err.message);
-    if (cached && cached.result) {
+    if (cached && cached.result && cached.result.rows && cached.result.rows.length > 0) {
       return sanitizeFineResult(cached.result, cleanPlate, displayPlate);
     }
 
@@ -4542,9 +4710,9 @@ async function fetchFinesForSinglePlate(plateInput: string, forceRefresh = false
       paidAmount: 0,
       totalCount: 0,
       totalAmount: 0,
-      status: "ЦЭВЭР",
+      status: "АЛДАА",
       rows: [],
-      error: err.name === "AbortError" ? "Хүсэлтийн хугацаа хэтэрлээ" : undefined,
+      error: err.name === "AbortError" ? "Хүсэлтийн хугацаа хэтэрлээ" : (err.message || "Серверт холбогдож чадсангүй"),
       checkedAt: new Date().toISOString(),
     };
 
@@ -4771,6 +4939,17 @@ async function runDailyFineAudit(targetDateInput?: string): Promise<DailyFineAud
   return result;
 }
 
+// Clear Fines Cache API (POST)
+app.post("/api/fines/clear-cache", (req: Request, res: Response) => {
+  try {
+    db.finesCache = {};
+    saveDB(db);
+    res.json({ status: "success", message: "Торгуулийн кэш цэвэрлэгдлээ" });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Check Fines API - Single Plate (POST)
 app.post("/api/fines/check", async (req: Request, res: Response) => {
   try {
@@ -4821,9 +5000,12 @@ app.get("/api/fines/summary", async (req: Request, res: Response) => {
     const summary: any[] = [];
     let allFines: FineItem[] = [];
 
-    // Process with concurrency limit of 5
-    const batchSize = 5;
+    // Process with concurrency limit of 2 to avoid overwhelming erthub upstream
+    const batchSize = 2;
     for (let i = 0; i < plateInfos.length; i += batchSize) {
+      if (i > 0) {
+        await new Promise((r) => setTimeout(r, 350));
+      }
       const batch = plateInfos.slice(i, i + batchSize);
       const results = await Promise.all(
         batch.map((p) => fetchFinesForSinglePlate(p.display, force))
@@ -4905,9 +5087,12 @@ app.post("/api/fines/check-bulk", async (req: Request, res: Response) => {
     const summary: any[] = [];
     let allFines: FineItem[] = [];
 
-    // Process in batches of 5
-    const batchSize = 5;
+    // Process in batches of 2
+    const batchSize = 2;
     for (let i = 0; i < plateInfos.length; i += batchSize) {
+      if (i > 0) {
+        await new Promise((r) => setTimeout(r, 350));
+      }
       const batch = plateInfos.slice(i, i + batchSize);
       const results = await Promise.all(
         batch.map((p) => fetchFinesForSinglePlate(p.display, !!force))

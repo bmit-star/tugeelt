@@ -67,9 +67,28 @@ export const IMDClientPortalView: React.FC<Props> = ({
     return d.toISOString().slice(0, 10);
   };
 
+  const isImdUrlInitial = () => {
+    if (typeof window === "undefined") return false;
+    const path = window.location.pathname.toLowerCase();
+    const search = window.location.search.toLowerCase();
+    const hash = window.location.hash.toLowerCase();
+    return (
+      path.startsWith("/imd") ||
+      path.includes("//imd") ||
+      path.includes("/sales/imd") ||
+      hash.includes("imd") ||
+      search.includes("view=imd") ||
+      search.includes("tab=imd") ||
+      search.includes("mode=imd")
+    );
+  };
+
+  const [portalMode, setPortalMode] = useState<"all" | "imd_only">(isImdUrlInitial() ? "imd_only" : "all");
   const [data, setData] = useState<IMDClientPortalData | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
-  const [activeTab, setActiveTab] = useState<"daily_routes" | "monthly_exceptions" | "imd_fleet" | "assignments" | "city_fleet" | "provinces" | "unassigned">("daily_routes");
+  const [activeTab, setActiveTab] = useState<"daily_routes" | "monthly_exceptions" | "imd_fleet" | "assignments" | "city_fleet" | "provinces" | "unassigned">(
+    isImdUrlInitial() ? "imd_fleet" : "daily_routes"
+  );
   
   // Daily registration status for /sales (30 City Routes + IMD)
   const [salesDailyDate, setSalesDailyDate] = useState<string>(getTodayUb());
@@ -144,10 +163,18 @@ export const IMDClientPortalView: React.FC<Props> = ({
   }, []);
 
   const handleCopyPortalLink = () => {
-    const url = `${window.location.origin}/sales`;
+    const isImd = portalMode === "imd_only";
+    const url = isImd ? `${window.location.origin}/imd` : `${window.location.origin}/sales`;
     navigator.clipboard.writeText(url);
     setCopiedLink(true);
-    if (onShowToast) onShowToast("Борлуулалтын дашбордын линк хуулагдлаа (/sales)", "success");
+    if (onShowToast) {
+      onShowToast(
+        isImd 
+          ? "Зөвхөн IMD линк хуулагдлаа: /imd" 
+          : "Борлуулалтын дашбордын линк хуулагдлаа (/sales)", 
+        "success"
+      );
+    }
     setTimeout(() => setCopiedLink(false), 2000);
   };
 

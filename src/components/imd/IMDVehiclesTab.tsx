@@ -13,7 +13,8 @@ import {
   Edit2,
   CheckCircle2,
   Layers,
-  ArrowRight
+  ArrowRight,
+  Trash2
 } from "lucide-react";
 import { Driver, IMDAssignment } from "../../types";
 import { api } from "../../services/api";
@@ -153,6 +154,18 @@ export const IMDVehiclesTab: React.FC<Props> = ({
       onShowToast(err.message || "Машин хадгалахад алдаа гарлаа", "error");
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleDeleteVehicle = async (plate: string) => {
+    if (!confirm(`'${plate}' дугаартай тээврийн хэрэгслийг системээс хасахдаа итгэлтэй байна уу?`)) return;
+    try {
+      await api.deleteIMDVehicle(plate);
+      onShowToast(`Машин ${plate} амжилттай хасагдлаа`, "success");
+      onRefresh();
+      fetchVehicles();
+    } catch (err: any) {
+      onShowToast(err.message || "Машин хасахад алдаа гарлаа", "error");
     }
   };
 
@@ -313,13 +326,23 @@ export const IMDVehiclesTab: React.FC<Props> = ({
 
               {/* Card Footer Actions */}
               <div className="pt-3 border-t border-slate-100 flex items-center justify-between gap-1.5">
-                <button
-                  onClick={() => openEditModal(veh)}
-                  className="px-2.5 py-1 rounded-xl border border-slate-200 text-slate-700 hover:bg-slate-50 text-xs font-bold flex items-center gap-1 transition-colors cursor-pointer"
-                >
-                  <Edit2 className="w-3 h-3 text-slate-500" />
-                  <span>Засах</span>
-                </button>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => openEditModal(veh)}
+                    className="px-2.5 py-1 rounded-xl border border-slate-200 text-slate-700 hover:bg-slate-50 text-xs font-bold flex items-center gap-1 transition-colors cursor-pointer"
+                  >
+                    <Edit2 className="w-3 h-3 text-slate-500" />
+                    <span>Засах</span>
+                  </button>
+
+                  <button
+                    onClick={() => handleDeleteVehicle(veh.plate || veh.cleanPlate)}
+                    className="p-1.5 rounded-xl border border-rose-200 text-rose-500 hover:bg-rose-50 hover:text-rose-700 text-xs transition-colors cursor-pointer"
+                    title="Энэ машиныг хасах"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
 
                 {onAssignVehicle && (
                   <button

@@ -59,6 +59,19 @@ interface AdminDashboardProps {
   onOpenRegulation?: () => void;
 }
 
+// Plate Normalization Helper for consistent matching across Cyrillic/Latin and spacing variations
+export const normalizeMatchPlate = (val: string) => {
+  if (!val) return "";
+  const s = String(val).trim().toUpperCase().replace(/[\s\-–—_().]/g, "");
+  const cyrMap: Record<string, string> = {
+    "A": "А", "B": "Б", "V": "В", "G": "Г", "D": "Д", "E": "Е", "J": "Ж", "Z": "З",
+    "I": "И", "Y": "Й", "K": "К", "L": "Л", "M": "М", "N": "Н", "O": "О", "P": "П",
+    "R": "Р", "S": "С", "T": "Т", "U": "У", "F": "Ф", "H": "Х", "C": "Ц", "CH": "Ч",
+    "SH": "Ш", "W": "В", "Q": "К", "X": "Х"
+  };
+  return s.replace(/[A-Z]/g, (c) => cyrMap[c] || c);
+};
+
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   drivers,
   onRefreshData,
@@ -69,7 +82,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onShowToast,
   onOpenRegulation
 }) => {
-  const [activeTab, setActiveTab] = useState<"fleet" | "daily_assignment" | "internal_fines" | "masterlog" | "imd" | "gpsbox" | "fines">("fleet");
+  const [activeTab, setActiveTab] = useState<"fleet" | "daily_assignment" | "km_list" | "internal_fines" | "masterlog" | "imd" | "gpsbox" | "fines">("fleet");
   const [appData, setAppData] = useState<AppDataResponse | null>(null);
   const [trips, setTrips] = useState<TripLog[]>([]);
   const [loading, setLoading] = useState(true);
@@ -78,9 +91,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   // Fines Management State (erthub.mn)
   const [bulkFines, setBulkFines] = useState<BulkFinesResult | null>(null);
   const [loadingFines, setLoadingFines] = useState(false);
+  const [checkingSinglePlate, setCheckingSinglePlate] = useState<string | null>(null);
   const [fineFilter, setFineFilter] = useState<"all" | "fines" | "clean" | "error">("all");
   const [fineSearch, setFineSearch] = useState("");
   const [expandedFinePlate, setExpandedFinePlate] = useState<string | null>(null);
+
+  // Driver KM List State (Section requested by manager)
+  const [allTrips, setAllTrips] = useState<TripLog[]>([]);
+  const [loadingAllTrips, setLoadingAllTrips] = useState(false);
+  const [kmSearch, setKmSearch] = useState("");
+  const [kmGroupFilter, setKmGroupFilter] = useState<"all" | "KA" | "M" | "IMD">("all");
+  const [kmSortBy, setKmSortBy] = useState<"month_desc" | "today_desc" | "odo_desc" | "trips_desc" | "code_asc">("month_desc");
 
   // Filters & Sorting State
   const [selectedDate, setSelectedDate] = useState(() => {
@@ -155,7 +176,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       const res = await API.getFinesSummary(force);
       setBulkFines(res);
       if (force) {
-        onShowToast(`Торгууль амжилттай шинэчлэгдлээ: ${res.fineCars} машин торгуультай, нийт ${res.totalAmount.toLocaleString()}₮`, "success");
+        onShowToast(`Торгууль амжилттай шинэчлэгдлээ: ${res.fineCars} машин төлөгдөөгүй торгуультай, нийт ${res.totalAmount.toLocaleString()}₮`, "success");
       }
     } catch (err: any) {
       onShowToast("Торгуулийн нэгтгэл татахад алдаа гарлаа: " + err.message, "error");
@@ -164,9 +185,86 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
   };
 
+  const handleCheckSingleVehicleFine = async (plate: string) => {
+    if (!plate || plate === "----") return;
+    setCheckingSinglePlate(plate);
+    try {
+      const res = await API.checkVehicleFines(plate, true);
+      setBulkFines((prev) => {
+        if (!prev) return null;
+        const norm = normalizeMatchPlate(plate);
+        const filteredRows = prev.rows.filter(
+          (r) => normalizeMatchPlate(r.plate) !== norm && normalizeMatchPlate(r.displayPlate) !== norm
+        );
+        const unpaidCount = res.unpaidCount !== undefined ? res.unpaidCount : (res.status === "ТӨЛӨӨГҮЙ" ? res.count : 0);
+        const unpaidAmount = res.unpaidAmount !== undefined ? res.unpaidAmount : (res.status === "ТӨЛӨӨГҮЙ" ? res.amount : 0);
+        const hasUnpaid = unpaidCount > 0 || res.status === "ТӨЛӨӨГҮЙ";
+
+        const newRows = [
+          ...filteredRows,
+          {
+            plate: res.plate,
+            displayPlate: res.displayPlate,
+            count: unpaidCount,
+            total: unpaidAmount,
+            unpaidCount,
+            unpaidAmount,
+            paidCount: res.paidCount || 0,
+            paidAmount: res.paidAmount || 0,
+            totalCount: res.totalCount !== undefined ? res.totalCount : (res.rows?.length || 0),
+            totalAmount: res.totalAmount !== undefined ? res.totalAmount : (res.rows?.reduce((s, r) => s + (Number(r.amount) || 0), 0) || 0),
+            status: hasUnpaid ? ("ТӨЛӨӨГҮЙ" as const) : ("ЦЭВЭР" as const),
+            checkedAt: res.checkedAt,
+            error: res.error,
+          },
+        ];
+
+        const filteredFines = (prev.fines || []).filter(
+          (f) => normalizeMatchPlate(f.plate) !== norm && normalizeMatchPlate(f.displayPlate) !== norm
+        );
+        const newFines = [...filteredFines, ...(res.rows || [])];
+        const unpaidFines = newFines.filter((f) => !f.isPaid && f.status !== "ТӨЛСӨН");
+        const fineCars = newRows.filter((r) => r.status === "ТӨЛӨӨГҮЙ" && Number(r.count) > 0).length;
+        const cleanCars = newRows.filter((r) => r.status === "ЦЭВЭР" || Number(r.count) === 0).length;
+
+        return {
+          ...prev,
+          fineCars,
+          cleanCars,
+          totalFineCount: unpaidFines.length,
+          totalAmount: unpaidFines.reduce((s, f) => s + (Number(f.amount) || 0), 0),
+          rows: newRows,
+          fines: newFines,
+          generatedAt: new Date().toISOString(),
+        };
+      });
+
+      const unpCount = res.unpaidCount !== undefined ? res.unpaidCount : (res.status === "ТӨЛӨӨГҮЙ" ? res.count : 0);
+      if (unpCount > 0) {
+        onShowToast(`${plate}: ${unpCount} төлөгдөөгүй торгууль (${Number(res.unpaidAmount || res.amount).toLocaleString()}₮) илэрлээ!`, "error");
+      } else {
+        onShowToast(`${plate}: Төлөгдөөгүй торгуульгүй (Цэвэр)`, "success");
+      }
+    } catch (err: any) {
+      onShowToast(`${plate} торгууль шалгахад алдаа гарлаа: ` + err.message, "error");
+    } finally {
+      setCheckingSinglePlate(null);
+    }
+  };
+
   useEffect(() => {
     if (activeTab === "fines" && !bulkFines && !loadingFines) {
       handleLoadFines(false);
+    }
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (activeTab === "km_list" && allTrips.length === 0 && !loadingAllTrips) {
+      setLoadingAllTrips(true);
+      API.getTrips({})
+        .then((res) => setAllTrips(res.trips || []))
+        .catch((err) => console.warn("Error fetching all trips for km list:", err))
+        .finally(() => setLoadingAllTrips(false));
     }
   }, [activeTab]);
 
@@ -371,6 +469,125 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     link.click();
     document.body.removeChild(link);
     onShowToast("MasterLog CSV амжилттай татагдлаа", "success");
+  };
+
+  const currentMonthStr = selectedDate ? selectedDate.slice(0, 7) : new Date().toISOString().slice(0, 7);
+
+  const driverKmStats = useMemo(() => {
+    return (drivers || []).map((driver) => {
+      const dCode = String(driver.code || driver.id || "").trim();
+      const dId = String(driver.id || "").trim();
+      const dVeh = String(driver.vehicle || "").trim();
+      const normVeh = normalizeMatchPlate(dVeh);
+
+      // Trips matching this driver
+      const driverTrips = allTrips.filter((t) => 
+        (t.driverId && (t.driverId.toUpperCase() === dCode.toUpperCase() || t.driverId.toUpperCase() === dId.toUpperCase())) ||
+        (t.vehicleNumber && normalizeMatchPlate(t.vehicleNumber) === normVeh)
+      );
+
+      // Today's trips
+      const todayTrips = driverTrips.filter((t) => t.date === selectedDate);
+      const todayKm = todayTrips.reduce((sum, t) => sum + (Number(t.totalKm) || 0), 0);
+
+      // This month's trips
+      const monthTrips = driverTrips.filter((t) => t.date && t.date.startsWith(currentMonthStr));
+      const monthKm = monthTrips.reduce((sum, t) => sum + (Number(t.totalKm) || 0), 0);
+
+      // Total completed trips
+      const completedTripsCount = driverTrips.filter((t) => t.status === "complete" || Number(t.totalKm) > 0).length;
+
+      // Telemetry info
+      const telem = appData?.telemetryList?.find((item) => normalizeMatchPlate(item.plate) === normVeh);
+      const currentOdo = driver.apiOdo || telem?.odometer || telem?.rawParams?.io16_odo_m || 0;
+
+      return {
+        driver,
+        code: dCode,
+        name: driver.name,
+        phone: driver.phone || "—",
+        vehicle: dVeh,
+        model: driver.model || "Isuzu NPR",
+        organization: driver.organization || (driver.isIMD ? "Айсмарк Дистрибьюшн ХХК" : "АЙСМАРК ТРЕЙД ХХК"),
+        isIMD: Boolean(driver.isIMD || (driver.organization && driver.organization.includes("Дистрибьюшн"))),
+        isKA: dCode.startsWith("KA"),
+        isM: dCode.startsWith("M"),
+        todayKm,
+        monthKm,
+        totalTrips: completedTripsCount,
+        currentOdo,
+        telemetry: telem,
+        status: driver.status || "active",
+      };
+    });
+  }, [drivers, allTrips, selectedDate, currentMonthStr, appData?.telemetryList]);
+
+  const filteredDriverKmList = useMemo(() => {
+    return driverKmStats
+      .filter((item) => {
+        if (!kmSearch) return true;
+        const q = kmSearch.toLowerCase();
+        return (
+          item.name.toLowerCase().includes(q) ||
+          item.code.toLowerCase().includes(q) ||
+          item.vehicle.toLowerCase().includes(q) ||
+          item.phone.toLowerCase().includes(q)
+        );
+      })
+      .filter((item) => {
+        if (kmGroupFilter === "all") return true;
+        if (kmGroupFilter === "KA") return item.isKA;
+        if (kmGroupFilter === "M") return item.isM;
+        if (kmGroupFilter === "IMD") return item.isIMD;
+        return true;
+      })
+      .sort((a, b) => {
+        if (kmSortBy === "today_desc") return b.todayKm - a.todayKm;
+        if (kmSortBy === "month_desc") return b.monthKm - a.monthKm;
+        if (kmSortBy === "odo_desc") return (b.currentOdo || 0) - (a.currentOdo || 0);
+        if (kmSortBy === "trips_desc") return b.totalTrips - a.totalTrips;
+        if (kmSortBy === "code_asc") return a.code.localeCompare(b.code);
+        return b.monthKm - a.monthKm;
+      });
+  }, [driverKmStats, kmSearch, kmGroupFilter, kmSortBy]);
+
+  const handleExportDriverKmCSV = () => {
+    const headers = [
+      "№",
+      "Бүсийн код",
+      "Жолоочийн нэр",
+      "Утас",
+      "Улсын дугаар",
+      "Модель",
+      "Байгууллага",
+      "Өнөөдрийн явсан км",
+      "Энэ сарын нийт км",
+      "Одоогийн ODO",
+      "Замын хуудасны тоо"
+    ];
+    const rows = filteredDriverKmList.map((item, idx) => [
+      idx + 1,
+      `"${item.code}"`,
+      `"${item.name}"`,
+      `"${item.phone}"`,
+      `"${item.vehicle}"`,
+      `"${item.model}"`,
+      `"${item.organization}"`,
+      item.todayKm,
+      item.monthKm,
+      item.currentOdo ? Math.round(Number(item.currentOdo)) : 0,
+      item.totalTrips
+    ]);
+    const csvContent = "\uFEFF" + [headers.join(","), ...rows.map(r => r.join(","))].join("\r\n");
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `Нийт_жолооч_нарын_км_${selectedDate}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    onShowToast("Жолооч нарын км-ийн нэгтгэл CSV амжилттай татагдлаа", "success");
   };
 
   const handleSaveGpsConfig = async (e: React.FormEvent) => {
@@ -739,6 +956,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           <span>Өдрийн жолоочийн бүртгэл</span>
           <span className="px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-900 text-[10px] font-black">
             Өдөр тутмын
+          </span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab("km_list")}
+          className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-black transition-all flex items-center gap-2 whitespace-nowrap cursor-pointer ${
+            activeTab === "km_list"
+              ? "bg-[#0878bd] text-white shadow-sm"
+              : "text-slate-600 hover:bg-slate-100"
+          }`}
+        >
+          <Gauge className="w-4 h-4 text-emerald-400" />
+          <span>Нийт жолооч нарын км</span>
+          <span className="px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-900 text-[10px] font-black">
+            {drivers.length} машин
           </span>
         </button>
 
@@ -1210,6 +1442,285 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
       )}
 
+      {/* TAB: DRIVER KM LIST (Нийт жолооч нарын кмын жагсаалт) */}
+      {activeTab === "km_list" && (
+        <div className="space-y-4">
+          {/* Top Stat Cards */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+            <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs">
+              <div className="flex items-center justify-between text-slate-500 mb-1">
+                <span className="text-xs font-bold uppercase tracking-wider">Нийт жолооч</span>
+                <Users className="w-4 h-4 text-[#0878bd]" />
+              </div>
+              <div className="text-2xl font-black text-[#123047]">
+                {drivers.length}
+                <span className="text-xs font-normal text-slate-400 ml-1">хүн</span>
+              </div>
+              <div className="text-[11px] text-slate-400 mt-1">Бүртгэлтэй нийт жолооч нар</div>
+            </div>
+
+            <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs">
+              <div className="flex items-center justify-between text-emerald-600 mb-1">
+                <span className="text-xs font-bold uppercase tracking-wider">Өнөөдрийн нийт км</span>
+                <Activity className="w-4 h-4" />
+              </div>
+              <div className="text-2xl font-black text-emerald-700">
+                {driverKmStats.reduce((sum, d) => sum + d.todayKm, 0).toLocaleString()}
+                <span className="text-xs font-normal text-emerald-600 ml-1">км</span>
+              </div>
+              <div className="text-[11px] text-emerald-600/80 mt-1 font-medium">Сонгосон өдөр: {selectedDate}</div>
+            </div>
+
+            <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs">
+              <div className="flex items-center justify-between text-sky-600 mb-1">
+                <span className="text-xs font-bold uppercase tracking-wider">Энэ сарын нийт км</span>
+                <Gauge className="w-4 h-4" />
+              </div>
+              <div className="text-2xl font-black text-[#0878bd]">
+                {driverKmStats.reduce((sum, d) => sum + d.monthKm, 0).toLocaleString()}
+                <span className="text-xs font-normal text-sky-600 ml-1">км</span>
+              </div>
+              <div className="text-[11px] text-slate-400 mt-1">{currentMonthStr} сарын хуримтлагдсан гүйлт</div>
+            </div>
+
+            <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs">
+              <div className="flex items-center justify-between text-slate-500 mb-1">
+                <span className="text-xs font-bold uppercase tracking-wider">Жолоочийн дундаж</span>
+                <Truck className="w-4 h-4 text-slate-600" />
+              </div>
+              <div className="text-2xl font-black text-slate-800">
+                {drivers.length > 0
+                  ? Math.round(driverKmStats.reduce((sum, d) => sum + d.monthKm, 0) / drivers.length).toLocaleString()
+                  : 0}
+                <span className="text-xs font-normal text-slate-400 ml-1">км/хүн</span>
+              </div>
+              <div className="text-[11px] text-slate-400 mt-1">Сарын дундаж гүйлт</div>
+            </div>
+          </div>
+
+          {/* Search, Filter & Actions Bar */}
+          <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-2xs flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-2 flex-1">
+              {/* Search Box */}
+              <div className="relative flex-1 min-w-[200px] sm:min-w-[240px]">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  placeholder="Жолоочийн нэр, код (M16), дугаар (2611 УЕВ)..."
+                  value={kmSearch}
+                  onChange={(e) => setKmSearch(e.target.value)}
+                  className="w-full pl-9 pr-3.5 py-2 rounded-xl border border-slate-300 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-[#0878bd]"
+                />
+              </div>
+
+              {/* Group Filter */}
+              <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl">
+                <button
+                  type="button"
+                  onClick={() => setKmGroupFilter("all")}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                    kmGroupFilter === "all" ? "bg-white text-[#123047] shadow-xs" : "text-slate-600 hover:text-slate-900"
+                  }`}
+                >
+                  Бүгд ({drivers.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setKmGroupFilter("KA")}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                    kmGroupFilter === "KA" ? "bg-[#0878bd] text-white shadow-xs" : "text-slate-600 hover:text-slate-900"
+                  }`}
+                >
+                  KA бүс ({driverKmStats.filter((d) => d.isKA).length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setKmGroupFilter("M")}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                    kmGroupFilter === "M" ? "bg-[#0878bd] text-white shadow-xs" : "text-slate-600 hover:text-slate-900"
+                  }`}
+                >
+                  M бүс ({driverKmStats.filter((d) => d.isM).length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setKmGroupFilter("IMD")}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                    kmGroupFilter === "IMD" ? "bg-[#0878bd] text-white shadow-xs" : "text-slate-600 hover:text-slate-900"
+                  }`}
+                >
+                  IMD орон нутаг ({driverKmStats.filter((d) => d.isIMD).length})
+                </button>
+              </div>
+
+              {/* Sort By Dropdown */}
+              <select
+                value={kmSortBy}
+                onChange={(e) => setKmSortBy(e.target.value as any)}
+                className="py-2 px-3 rounded-xl border border-slate-300 text-xs sm:text-sm font-semibold bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-[#0878bd] cursor-pointer"
+              >
+                <option value="month_desc">⚡ Энэ сарын км: Ихээс бага</option>
+                <option value="today_desc">📅 Өнөөдрийн км: Ихээс бага</option>
+                <option value="odo_desc">🏎️ Одоогийн ODO заалт: Ихээс бага</option>
+                <option value="trips_desc">📋 Замын хуудасны тоо: Ихээс бага</option>
+                <option value="code_asc">🔤 Бүсийн кодоор (A-Z)</option>
+              </select>
+            </div>
+
+            {/* Actions */}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleExportDriverKmCSV}
+                className="px-3.5 py-2 rounded-xl bg-[#0878bd] hover:bg-[#076ba8] text-white text-xs font-black flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
+                title="Жолооч нарын нийт км-ийн тайланг CSV форматаар татах"
+              >
+                <Download className="w-4 h-4" />
+                <span>Км тайлан CSV</span>
+              </button>
+            </div>
+          </div>
+
+          {/* KM List Table */}
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden">
+            <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+              <div className="flex items-center gap-2">
+                <Gauge className="w-5 h-5 text-[#0878bd]" />
+                <h3 className="text-sm font-black text-[#123047]">
+                  Нийт жолооч нарын гүйлт, км-ийн нэгдсэн жагсаалт ({filteredDriverKmList.length} жолооч)
+                </h3>
+              </div>
+              <span className="text-xs text-slate-400 font-mono">
+                Огноо: {selectedDate} ({currentMonthStr} сар)
+              </span>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs border-collapse min-w-[950px]">
+                <thead>
+                  <tr className="bg-slate-100/70 border-b border-slate-200 text-slate-600 font-bold uppercase tracking-wider text-[11px]">
+                    <th className="p-3 pl-4">№</th>
+                    <th className="p-3">Бүсийн код / Жолооч</th>
+                    <th className="p-3">Улсын дугаар & Модель</th>
+                    <th className="p-3">Байгууллага / Бүс</th>
+                    <th className="p-3 text-right font-black text-slate-800">Өнөөдрийн км</th>
+                    <th className="p-3 text-right font-black text-[#0878bd]">Энэ сарын нийт км</th>
+                    <th className="p-3 text-right font-mono text-slate-700">Одоогийн ODO</th>
+                    <th className="p-3 text-center">Замын хуудас</th>
+                    <th className="p-3 text-center">Төлөв</th>
+                    <th className="p-3 pr-4 text-center">Үйлдэл</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {filteredDriverKmList.map((item, idx) => {
+                    return (
+                      <tr key={item.driver.id || idx} className="hover:bg-slate-50/80 transition-colors">
+                        <td className="p-3 pl-4 text-slate-400 font-mono text-[11px]">{idx + 1}</td>
+                        <td className="p-3">
+                          <div className="flex items-center gap-2">
+                            <span className="w-8 h-8 rounded-lg bg-sky-50 text-[#0878bd] font-black flex items-center justify-center text-xs border border-sky-100 shrink-0">
+                              {item.code}
+                            </span>
+                            <div>
+                              <div className="font-bold text-slate-900">{item.name}</div>
+                              <div className="text-[11px] text-slate-400">{item.phone}</div>
+                            </div>
+                          </div>
+                        </td>
+
+                        <td className="p-3">
+                          <div className="font-black text-slate-800 text-sm">{item.vehicle}</div>
+                          <div className="text-[11px] text-slate-500">{item.model}</div>
+                        </td>
+
+                        <td className="p-3">
+                          <span className={`px-2 py-0.5 rounded-md text-[10px] font-black ${
+                            item.isIMD
+                              ? "bg-blue-100 text-blue-800 border border-blue-200"
+                              : "bg-slate-100 text-slate-700 border border-slate-200"
+                          }`}>
+                            {item.isIMD ? "IMD Орон нутаг" : "IMT Хот доторх"}
+                          </span>
+                        </td>
+
+                        <td className="p-3 text-right font-mono font-bold">
+                          {item.todayKm > 0 ? (
+                            <span className="text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200 font-black">
+                              {Math.round(item.todayKm).toLocaleString()} км
+                            </span>
+                          ) : (
+                            <span className="text-slate-400 font-normal">0 км</span>
+                          )}
+                        </td>
+
+                        <td className="p-3 text-right font-mono font-black text-sm">
+                          {item.monthKm > 0 ? (
+                            <span className="text-[#0878bd] bg-sky-50 px-2 py-0.5 rounded-md border border-sky-200">
+                              {Math.round(item.monthKm).toLocaleString()} км
+                            </span>
+                          ) : (
+                            <span className="text-slate-400 font-normal text-xs">0 км</span>
+                          )}
+                        </td>
+
+                        <td className="p-3 text-right font-mono text-slate-700 font-semibold">
+                          {item.currentOdo ? `${Math.round(Number(item.currentOdo)).toLocaleString()} км` : "—"}
+                        </td>
+
+                        <td className="p-3 text-center">
+                          <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-slate-100 text-slate-700">
+                            {item.totalTrips} хуудас
+                          </span>
+                        </td>
+
+                        <td className="p-3 text-center">
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                            item.status === "active"
+                              ? "bg-emerald-100 text-emerald-800"
+                              : "bg-slate-100 text-slate-500"
+                          }`}>
+                            {item.status === "active" ? "Идэвхтэй" : "Идэвхгүй"}
+                          </span>
+                        </td>
+
+                        <td className="p-3 pr-4 text-center">
+                          <div className="flex items-center justify-center gap-1">
+                            <button
+                              onClick={() => onOpenVehicleSheet(item.vehicle)}
+                              className="px-2 py-1 rounded-lg bg-sky-50 hover:bg-sky-100 text-[#0878bd] text-[11px] font-bold transition-colors flex items-center gap-1 cursor-pointer"
+                              title="Маягт А4 цахим дэвтэр"
+                            >
+                              <FileSpreadsheet className="w-3 h-3" />
+                              <span>Маягт</span>
+                            </button>
+
+                            <button
+                              onClick={() => onOpenDriverWaybill(item.driver)}
+                              className="px-2.5 py-1 rounded-lg bg-[#0878bd] hover:bg-[#076ba8] text-white text-[11px] font-bold transition-all flex items-center gap-1 cursor-pointer shadow-2xs"
+                              title="Замын хуудас нээх"
+                            >
+                              <span>Хуудас</span>
+                              <ChevronRight className="w-3 h-3" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+
+                  {filteredDriverKmList.length === 0 && (
+                    <tr>
+                      <td colSpan={10} className="p-8 text-center text-slate-400">
+                        Хайлтад тохирох жолооч олдсонгүй.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* TAB 2: MASTERLOG SUMMARY */}
       {activeTab === "masterlog" && (
         <div className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden">
@@ -1667,8 +2178,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 className="py-2 px-3 rounded-xl border border-slate-300 text-xs sm:text-sm font-semibold bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-[#0878bd]"
               >
                 <option value="all">Бүх машин ({drivers.length})</option>
-                <option value="fines">⚠️ Төлөөгүй торгуультай ({bulkFines?.fineCars || 0})</option>
-                <option value="clean">✅ Зөрчилгүй / Төлөгдсөн ({bulkFines?.cleanCars || 0})</option>
+                <option value="fines">⚠️ Төлөөгүй торгуультай ({drivers.filter(d => {
+                  const norm = normalizeMatchPlate(d.vehicle);
+                  const row = bulkFines?.rows?.find(r => normalizeMatchPlate(r.plate) === norm || normalizeMatchPlate(r.displayPlate) === norm);
+                  return row && (row.status === "ТӨЛӨӨГҮЙ" || Number(row.unpaidCount ?? row.count) > 0);
+                }).length})</option>
+                <option value="clean">✅ Зөрчилгүй / Төлөгдсөн ({drivers.length - drivers.filter(d => {
+                  const norm = normalizeMatchPlate(d.vehicle);
+                  const row = bulkFines?.rows?.find(r => normalizeMatchPlate(r.plate) === norm || normalizeMatchPlate(r.displayPlate) === norm);
+                  return row && (row.status === "ТӨЛӨӨГҮЙ" || Number(row.unpaidCount ?? row.count) > 0);
+                }).length})</option>
               </select>
             </div>
 
@@ -1726,9 +2245,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     })
                     .filter((driver) => {
                       if (fineFilter === "all") return true;
-                      const cleanVeh = (driver.vehicle || "").trim().toUpperCase();
+                      const normVeh = normalizeMatchPlate(driver.vehicle);
                       const fineRow = bulkFines?.rows?.find(
-                        (r) => r.plate.toUpperCase() === cleanVeh || r.displayPlate.toUpperCase() === cleanVeh
+                        (r) => normalizeMatchPlate(r.plate) === normVeh || normalizeMatchPlate(r.displayPlate) === normVeh
                       );
                       const isUnpaid = fineRow && (fineRow.status === "ТӨЛӨӨГҮЙ" || (Number(fineRow.unpaidCount ?? fineRow.count) > 0 && fineRow.status !== "ЦЭВЭР"));
                       if (fineFilter === "fines") return isUnpaid;
@@ -1736,23 +2255,29 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       return true;
                     })
                     .map((driver) => {
+                      const normVeh = normalizeMatchPlate(driver.vehicle);
                       const cleanVeh = (driver.vehicle || "").trim().toUpperCase();
                       const fineRow = bulkFines?.rows?.find(
-                        (r) => r.plate.toUpperCase() === cleanVeh || r.displayPlate.toUpperCase() === cleanVeh
+                        (r) => normalizeMatchPlate(r.plate) === normVeh || normalizeMatchPlate(r.displayPlate) === normVeh
                       );
-                      const isUnpaid = fineRow && (fineRow.status === "ТӨЛӨӨГҮЙ" || (Number(fineRow.unpaidCount ?? fineRow.count) > 0 && fineRow.status !== "ЦЭВЭР"));
-                      const hasFine = isUnpaid;
-                      const unpaidCount = fineRow ? (fineRow.unpaidCount !== undefined ? Number(fineRow.unpaidCount) : (hasFine ? Number(fineRow.count || 0) : 0)) : 0;
-                      const unpaidTotal = fineRow ? (fineRow.unpaidAmount !== undefined ? Number(fineRow.unpaidAmount) : (hasFine ? Number(fineRow.total || 0) : 0)) : 0;
-                      const paidCount = fineRow?.paidCount !== undefined ? Number(fineRow.paidCount) : 0;
-                      const isExpanded = expandedFinePlate === cleanVeh;
-
-                      // Vehicle specific fine violation items
                       const vehicleFines = bulkFines?.fines?.filter(
-                        (f) => f.plate.toUpperCase() === cleanVeh || f.displayPlate.toUpperCase() === cleanVeh
+                        (f) => normalizeMatchPlate(f.plate) === normVeh || normalizeMatchPlate(f.displayPlate) === normVeh
                       ) || [];
                       const unpaidVehicleFines = vehicleFines.filter((f) => !f.isPaid && f.status !== "ТӨЛСӨН");
                       const paidVehicleFines = vehicleFines.filter((f) => f.isPaid || f.status === "ТӨЛСӨН");
+
+                      const hasFine = fineRow
+                        ? (fineRow.status === "ТӨЛӨӨГҮЙ" || Number(fineRow.unpaidCount ?? fineRow.count) > 0)
+                        : unpaidVehicleFines.length > 0;
+                      const unpaidCount = fineRow
+                        ? (fineRow.unpaidCount !== undefined ? Number(fineRow.unpaidCount) : (hasFine ? Number(fineRow.count || 0) : 0))
+                        : unpaidVehicleFines.length;
+                      const unpaidTotal = fineRow
+                        ? (fineRow.unpaidAmount !== undefined ? Number(fineRow.unpaidAmount) : (hasFine ? Number(fineRow.total || 0) : 0))
+                        : unpaidVehicleFines.reduce((s, f) => s + (Number(f.amount) || 0), 0);
+                      const paidCount = fineRow?.paidCount !== undefined ? Number(fineRow.paidCount) : paidVehicleFines.length;
+                      const isExpanded = expandedFinePlate === cleanVeh || expandedFinePlate === normVeh;
+                      const isCheckingThis = checkingSinglePlate === driver.vehicle;
 
                       return (
                         <React.Fragment key={driver.id}>
@@ -1827,21 +2352,31 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                             </td>
 
                             <td className="p-3 pr-4 text-center">
-                              {vehicleFines.length > 0 ? (
+                              <div className="flex items-center justify-center gap-1.5">
+                                {vehicleFines.length > 0 && (
+                                  <button
+                                    onClick={() => setExpandedFinePlate(isExpanded ? null : normVeh)}
+                                    className={`px-2.5 py-1 rounded-lg font-bold text-xs flex items-center gap-1 transition-colors cursor-pointer ${
+                                      hasFine
+                                        ? "bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200"
+                                        : "bg-slate-100 hover:bg-slate-200 text-slate-700"
+                                    }`}
+                                  >
+                                    <span>{isExpanded ? "Хураах" : hasFine ? `Төлөөгүй (${unpaidCount})` : `Түүх (${vehicleFines.length})`}</span>
+                                    {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                                  </button>
+                                )}
+
                                 <button
-                                  onClick={() => setExpandedFinePlate(isExpanded ? null : cleanVeh)}
-                                  className={`px-2.5 py-1 rounded-lg font-bold text-xs flex items-center gap-1 mx-auto transition-colors cursor-pointer ${
-                                    hasFine
-                                      ? "bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200"
-                                      : "bg-slate-100 hover:bg-slate-200 text-slate-700"
-                                  }`}
+                                  onClick={() => handleCheckSingleVehicleFine(driver.vehicle)}
+                                  disabled={isCheckingThis || loadingFines}
+                                  className="px-2 py-1 rounded-lg border border-slate-200 hover:border-sky-300 hover:bg-sky-50 text-slate-600 hover:text-[#0878bd] text-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer disabled:opacity-50"
+                                  title="Зөвхөн энэ машины торгуулийг замын цагдаагийн системээс шууд татаж шалгах"
                                 >
-                                  <span>{isExpanded ? "Хураах" : hasFine ? `Төлөөгүй зөрчил (${unpaidCount})` : `Түүх харах (${vehicleFines.length})`}</span>
-                                  {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                                  <RefreshCw className={`w-3.5 h-3.5 ${isCheckingThis ? "animate-spin text-[#0878bd]" : ""}`} />
+                                  <span className="hidden xl:inline">{isCheckingThis ? "Шалгаж байна..." : "Шалгах"}</span>
                                 </button>
-                              ) : (
-                                <span className="text-slate-300 text-xs">—</span>
-                              )}
+                              </div>
                             </td>
                           </tr>
 

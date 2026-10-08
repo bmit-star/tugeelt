@@ -51,7 +51,7 @@ const AUTH_STORAGE_KEY = "fleet_auth_driver_code_v2";
 const MANAGER_AUTH_KEY = "fleet_manager_authenticated_session_v1";
 
 export default function App() {
-  // Check if URL is customer portal subpage: /sales, /portal, /customer, /client or ?view=sales
+  // Check if URL is customer portal subpage: /sales, /imd, /portal, /customer, /client or ?view=sales / ?view=imd
   const isCustomerPortalPath = () => {
     if (typeof window === "undefined") return false;
     const path = window.location.pathname.toLowerCase();
@@ -59,15 +59,21 @@ export default function App() {
     const search = window.location.search.toLowerCase();
     return (
       path.startsWith("/sales") ||
+      path.startsWith("/imd") ||
       path.startsWith("/borluulalt") ||
       path.startsWith("/progress") ||
       path.startsWith("/portal") || 
       path.startsWith("/customer") || 
       path.startsWith("/client") || 
+      path.includes("//imd") ||
+      path.includes("/sales/imd") ||
       hash.includes("sales") ||
+      hash.includes("imd") ||
       hash.includes("portal") || 
       hash.includes("customer") || 
       search.includes("view=sales") ||
+      search.includes("view=imd") ||
+      search.includes("tab=imd") ||
       search.includes("view=portal") || 
       search.includes("view=customer") ||
       search.includes("portal=true")
@@ -101,10 +107,14 @@ export default function App() {
     return (
       path.startsWith("/manager") || 
       path.startsWith("/admin") || 
+      path.startsWith("/km") || 
       hash.includes("manager") || 
       hash.includes("admin") ||
+      hash.includes("km") ||
       search.includes("role=manager") ||
-      search.includes("role=admin")
+      search.includes("role=admin") ||
+      search.includes("tab=km") ||
+      search.includes("view=km")
     );
   };
 

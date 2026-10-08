@@ -80,7 +80,7 @@ export class DriverRepository {
 
   static delete(id: string): boolean {
     const db = getDatabase();
-    const res = db.prepare("DELETE FROM drivers WHERE id = ?").run(id);
+    const res = db.prepare("DELETE FROM drivers WHERE id = ? OR code = ?").run(id, id);
     return res.changes > 0;
   }
 }

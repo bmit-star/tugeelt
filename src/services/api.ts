@@ -902,6 +902,14 @@ export const API = {
     return json;
   },
 
+  async deleteIMDVehicle(plate: string): Promise<void> {
+    const res = await fetch(`/api/imd/vehicles/${encodeURIComponent(plate)}`, {
+      method: "DELETE",
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error || "Машин хасахад алдаа гарлаа");
+  },
+
   async setDriverKmPrivacy(
     driverId: string, 
     action: "set" | "verify" | "remove", 

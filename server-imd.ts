@@ -2552,9 +2552,11 @@ export function setupIMDModule(
         }
       });
 
-      // 2. Ensure all 8 official vehicles are present even if not marked isIMD
+      // 2. Ensure official vehicles are present unless explicitly deleted by manager
+      const deletedVehiclesSet = new Set((db.deletedVehicles || []).map((x: string) => x.replace(/\s+/g, "").toUpperCase()));
       for (const [plate, cap] of Object.entries(OFFICIAL_BOX_CAPACITY_MAP)) {
         const cleanPlate = plate.replace(/\s+/g, "").toUpperCase();
+        if (deletedVehiclesSet.has(cleanPlate)) continue; // Respect permanent deletion
         if (!vehiclesMap.has(cleanPlate)) {
           const matchedDriver = drivers.find((d: any) => d.vehicle?.replace(/\s+/g, "").toUpperCase() === cleanPlate);
           vehiclesMap.set(cleanPlate, {
@@ -2592,6 +2594,10 @@ export function setupIMDModule(
       }
 
       const cleanPlate = plate.trim().toUpperCase();
+      const norm = cleanPlate.replace(/\s+/g, "");
+      if (!db.deletedVehicles) db.deletedVehicles = [];
+      db.deletedVehicles = db.deletedVehicles.filter((x: string) => x !== norm && x !== cleanPlate);
+
       const capNum = Number(boxCapacity) > 0 ? Number(boxCapacity) : (OFFICIAL_BOX_CAPACITY_MAP[cleanPlate.replace(/\s+/g, "")] || 700);
       const cleanName = driverName ? driverName.trim() : `Жолооч (${cleanPlate})`;
       const cleanCode = code ? String(code).trim().toUpperCase() : (cleanPlate.replace(/[^0-9]/g, "") || Date.now().toString().slice(-4));
@@ -2698,6 +2704,36 @@ export function setupIMDModule(
       });
 
       res.json({ status: "success", driver: db.drivers[driverIdx] });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.delete("/api/imd/vehicles/:plate", (req: Request, res: Response) => {
+    try {
+      const { plate } = req.params;
+      const cleanPlate = decodeURIComponent(plate).replace(/\s+/g, "").toUpperCase();
+      if (!db.deletedVehicles) db.deletedVehicles = [];
+      if (!db.deletedVehicles.includes(cleanPlate)) {
+        db.deletedVehicles.push(cleanPlate);
+      }
+
+      const driverIdx = (db.drivers || []).findIndex((d: any) => d.vehicle?.replace(/\s+/g, "").toUpperCase() === cleanPlate);
+      if (driverIdx !== -1) {
+        // If driver exists and is a custom IMD vehicle, delete or unassign
+        const driver = db.drivers[driverIdx];
+        if (driver.isCustom) {
+          db.drivers.splice(driverIdx, 1);
+        } else {
+          db.drivers[driverIdx].vehicle = "----";
+          db.drivers[driverIdx].isIMD = false;
+        }
+        saveDB(db);
+        logAudit("Менежер", "VEHICLE_DELETE", `IMD тээврийн хэрэгсэл хасагдлаа: ${cleanPlate}`, null, { plate: cleanPlate });
+      } else {
+        saveDB(db);
+      }
+      res.json({ status: "success", message: "Тээврийн хэрэгсэл амжилттай хасагдлаа" });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
